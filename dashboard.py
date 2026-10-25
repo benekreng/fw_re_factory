@@ -44,7 +44,7 @@ def make_server(store, port=8787, host='127.0.0.1'):
         def do_POST(self):
             path=urlparse(self.path).path
             match=re.fullmatch(r'/api/jobs/([a-zA-Z0-9_-]{1,64})/(launch|model|settings|stop|resume|replace)',path)
-            if path not in ('/api/launch-mode','/api/recovery-policy','/api/recovery-policy/notify','/api/models/refresh') and not match:
+            if path not in ('/api/launch-mode','/api/recovery-policy','/api/recovery-policy/notify','/api/models/refresh','/api/usage/refresh') and not match:
                 self.respond({'error':'Unsupported dashboard action'},code=405);return
             if not self.valid_host() or self.headers.get('Origin')!='http://'+self.headers.get('Host','') or not hmac.compare_digest(self.headers.get('X-CSRF-Token','').encode(),csrf_token.encode()):
                 self.respond({'error':'Use the launch controls from this dashboard page.'},code=403);return
@@ -63,6 +63,8 @@ def make_server(store, port=8787, host='127.0.0.1'):
                     result={'job':model_editor.update_model(store,match[1],payload)}
                 elif path=='/api/models/refresh':
                     result=model_editor.request_catalog(store)
+                elif path=='/api/usage/refresh':
+                    result=engine.sample_usage(store)
                 elif match:
                     result={'approval':engine.request_launch(store,match[1]),'notification':engine.notify_launch(store)}
                 elif path=='/api/recovery-policy':

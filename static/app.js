@@ -84,7 +84,8 @@ function renderAccounts(){
    const prediction=forecasts.find(f=>f.window===w.window);
    const name=w.seconds===18000?'5-hour':w.seconds===604800?'Weekly':label(w.window);
    const scope=w.scope&&w.scope!=='all'?' · '+label(w.scope).replace(/^(seven day|five hour)\s*/, '').replace(/:$/, ''):'';
-   return `<tr>${account}<td>${esc(name+scope)}</td><td class="${w.used>=98?'warn-text':''}">${fmt.format(w.used)}%</td><td>${esc(relative(w.reset_at))}${w.reset_at?`<small>${esc(time(w.reset_at))}</small>`:''}</td><td>${prediction?.ratePerHour!=null?fmt.format(prediction.ratePerHour)+' pp/h':'Measuring'}${prediction?.exhaustHours!=null?`<small>Limit in ~${fmt.format(prediction.exhaustHours)} h</small>`:''}${a.errors.length?`<small class="warn-text">${esc(a.errors.join('; '))}</small>`:''}</td></tr>`;
+   const rate=prediction?.ratePerHour!=null?fmt.format(prediction.ratePerHour)+' pp/h'+(prediction.confidence==='low'?'<small>Early estimate</small>':''):`<span title="${esc(prediction?.rateReason||'Waiting for usage samples at least 30 seconds apart.')}">Collecting samples</span>`;
+   return `<tr>${account}<td>${esc(name+scope)}</td><td class="${w.used>=98?'warn-text':''}">${fmt.format(w.used)}%</td><td>${esc(relative(w.reset_at))}${w.reset_at?`<small>${esc(time(w.reset_at))}</small>`:''}</td><td>${rate}${prediction?.exhaustHours!=null?`<small>Limit in ~${fmt.format(prediction.exhaustHours)} h</small>`:''}${a.errors.length?`<small class="warn-text">${esc(a.errors.join('; '))}</small>`:''}</td></tr>`;
   }).join('')}</tbody>`;
  }).join('');
  const details=usage.accounts.map(a=>{
@@ -226,6 +227,17 @@ function render(data){
 async function refresh(){try{const r=await fetch('/api/status');if(!r.ok)throw new Error('Dashboard request failed: HTTP '+r.status);render(await r.json());if(modelEdit)await loadModelCatalog();return true;}catch(e){$('error').hidden=false;$('error').textContent=e.message+' Displayed data may be stale.';$('sync').textContent='Connection lost';return false;}}
 $('jobs').addEventListener('click',e=>{const button=e.target.closest('[data-launch]');if(button)operatorAction('/api/jobs/'+button.dataset.launch+'/launch',{});});
 $('launch-mode').addEventListener('change',e=>operatorAction('/api/launch-mode',{mode:e.target.value}));
+$('refresh-usage').addEventListener('click',async()=>{
+ if(!state)return;
+ const button=$('refresh-usage');button.disabled=true;$('usage-status').textContent='Reading account usage…';
+ try{
+  const response=await fetch('/api/usage/refresh',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:'{}'});
+  const result=await response.json();if(!response.ok||result.error)throw new Error(result.error||'Usage refresh failed.');
+  if(!await refresh())throw new Error('Usage was sampled, but the dashboard could not reload it.');
+  $('usage-status').textContent=state.usage?.ok===false||!state.usage?.accounts?.length||state.usage.accounts.some(a=>a.errors.length||!a.windows.length)?'Usage refreshed; some account data is unavailable.':'Usage refreshed.';
+ }catch(error){$('usage-status').textContent=error.message;}
+ finally{button.disabled=false;}
+});
 $('filter').addEventListener('change',renderJobs);$('window-filter').addEventListener('change',()=>state&&renderChart());refresh();setInterval(refresh,15000);
 
 $('recovery-form').addEventListener('submit',e=>{e.preventDefault();saveRecoveryPolicy();});

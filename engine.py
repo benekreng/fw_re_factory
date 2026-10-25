@@ -433,6 +433,7 @@ def forecast(s):
                 cutoff=c.execute('SELECT value FROM metadata WHERE key=?',('calibration_after:'+a['provider'],)).fetchone()
                 history=[dict(x) for x in c.execute('SELECT * FROM quota WHERE account=? AND window=? AND time>=? ORDER BY id DESC LIMIT 80',(a['account'],w['window'],cutoff[0] if cutoff else ''))][::-1]
             rates=[]; worker_rates=[]; reset_event=None
+            rate_reason='Waiting for usage samples at least 30 seconds apart.'
             for prev,cur in zip(history,history[1:]):
                 elapsed=(stamp(cur['time']) or 0)-(stamp(prev['time']) or 0)
                 change=cur['used']-prev['used']
@@ -441,11 +442,20 @@ def forecast(s):
                     crossed=scheduled is not None and stamp(prev['time'])<=scheduled<=stamp(cur['time'])
                     reset_event={'time':cur['time'],'kind':'scheduled reset' if crossed else 'rolling recovery or possible provider replenishment','drop':round(-change,2)}
                     rates=[];worker_rates=[]
-                if cur['reset_at']!=prev['reset_at']:
+                    rate_reason='Collecting a new baseline after usage decreased.'
+                # Claude reports the same boundary with subsecond jitter on each poll.
+                # Compare instants, allowing two seconds of rounding/clock noise, while
+                # preserving the original timestamps for display and reset detection.
+                old_reset,new_reset=stamp(prev['reset_at']),stamp(cur['reset_at'])
+                boundary_changed=(abs(new_reset-old_reset)>2 if old_reset is not None and new_reset is not None
+                                  else cur['reset_at']!=prev['reset_at'])
+                if boundary_changed:
                     rates=[];worker_rates=[]
+                    rate_reason='Collecting a new baseline after the reset boundary changed.'
                     continue
                 if cur['profile']!=prev['profile'] or cur['active_workers']!=prev['active_workers']:
                     rates=[];worker_rates=[]
+                    rate_reason='Collecting a new baseline after the worker mix changed.'
                     continue
                 if 30<=elapsed<=3600 and change>=0:
                     rates.append((change,elapsed))
@@ -459,6 +469,7 @@ def forecast(s):
                                estimatedWorkerRate=sum(x[0] for x in worker_rates)*3600/sum(x[1] for x in worker_rates) if worker_rates else None,
                                workerIntervals=len(worker_rates),profile=history[-1]['profile'] if history else None,
                                exhaustHours=hours,intervals=len(rates),observedHours=total_seconds/3600,
+                               rateReason=rate_reason if rate is None else None,
                                confidence='low' if len(rates)<3 or total_seconds<900 else 'measured',resetEvent=reset_event))
     return result
 
