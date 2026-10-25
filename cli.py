@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Terminal entrypoint. Queue changes are explicit; the dashboard stays read-only."""
+"""Terminal entrypoint for the firmware RE queue and launch controls."""
 import argparse
 import json
 from pathlib import Path
@@ -66,6 +66,8 @@ def wizard(s):
                        'targetHost':input('Target host/architecture [skill default]: ').strip()})
         if input('Add another device with these settings? [y/N]: ').lower()!='y':break
     maximum=int(input('Maximum concurrent workers, 1–4 [2]: ').strip() or '2')
+    launch_mode=choose('Launch mode',[('Manual: queue jobs, then click Launch','manual'),('Automatic: start queued jobs when eligible','automatic')],
+                       1 if s.config().get('launchMode')=='automatic' else 0)
     usage_policy=choose('Usage scheduling policy',[('Short window first (weekly exhaustion still blocks)','short-window'),('Balance all windows','balanced'),('Weekly budget first','weekly-first')])
     wake_seconds=int(input('Watcher wake interval in seconds, 60–3600 [240]: ').strip() or '240')
     pause_policy=input('Allow cooperative checkpoint pauses when usage forecasts exceed budget? [y/N]: ').lower()=='y'
@@ -75,16 +77,17 @@ def wizard(s):
     for g in groups:s.validate_group(g,selected)
     print('\nApproved backlog request:\n'+json.dumps(payload,indent=2))
     print(f'Controller: {usage_policy}; watcher wakes every {wake_seconds} seconds; checkpoint pauses: {pause_policy}. Cache retention is measured, not guaranteed.')
-    print('Jobs can start automatically when usage and concurrency policy permit.')
+    print('Jobs wait for your Launch approval.' if launch_mode=='manual' else 'Jobs can start automatically when usage and concurrency policy permit.')
     if input('Queue and notify the watcher? [y/N]: ').lower()!='y':return {'queued':False}
     with engine.lock(s):
         jobs=s.enqueue(payload)
-        config=s.config();config.update(maxParallel=maximum,policy=usage_policy,wakeSeconds=wake_seconds,sampleSeconds=wake_seconds,checkpointPauses=pause_policy);atomic_json(s.data/'config.json',config)
+        config=s.config();config.update(launchMode=launch_mode,maxParallel=maximum,policy=usage_policy,wakeSeconds=wake_seconds,sampleSeconds=wake_seconds,checkpointPauses=pause_policy);atomic_json(s.data/'config.json',config)
         engine.bootstrap(s)
     return {'jobs':[j['id'] for j in jobs],'watcher':engine.owner(s),'notification':engine.wake(s,'approved queue changed',force=True)}
 
 
 def configure(s, key, value):
+    if key=='launchMode':return engine.set_launch_mode(s,value)
     integers={'wakeSeconds':(60,3600),'sampleSeconds':(60,3600),'tokenSeconds':(60,3600),'maxParallel':(1,4),'quotaFreshSeconds':(60,3600)}
     if key in integers:
         value=int(value);lo,hi=integers[key]
@@ -108,6 +111,8 @@ def main():
     for cmd in ('status','plan','sample','tokens','daemon','catalog'):subs.add_parser(cmd)
     q=subs.add_parser('enqueue');q.add_argument('request',type=Path);q.add_argument('--no-dispatch',action='store_true')
     q=subs.add_parser('cancel');q.add_argument('id')
+    q=subs.add_parser('launch',help='Approve one job to launch; use only on explicit operator request.')
+    q.add_argument('id',help='Job ID or device directory name.')
     q=subs.add_parser('worker');worker=q.add_subparsers(dest='operation',required=True)
     q=worker.add_parser('replace',help='Adopt an existing replacement after archiving the old worker.')
     q.add_argument('job',help='Job ID or device directory name.');q.add_argument('thread')
@@ -130,6 +135,8 @@ def main():
         elif args.action=='tokens':result=engine.sample_tokens(s)
         elif args.action=='catalog':result=list(s.catalog.values())
         elif args.action=='config':result=configure(s,args.key,args.value) if args.key and args.value is not None else s.config()
+        elif args.action=='launch':
+            result={'approval':engine.request_launch(s,args.id),'notification':engine.notify_launch(s)}
         elif args.action=='enqueue':
             with engine.lock(s):
                 jobs=s.enqueue(json.loads(args.request.read_text()))

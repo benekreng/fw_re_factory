@@ -1,6 +1,6 @@
 # fw_re_factory
 
-A terminal launcher, durable Python controller, one T3 watcher, and a local read-only dashboard for firmware RE work.
+A terminal launcher, durable Python controller, one T3 watcher, and a local dashboard with manual launch controls for firmware RE work.
 
 See [Worker prompts, watcher prompts and the workflow](docs/PROMPTS_AND_WORKFLOW.md) for a section-by-section explanation of both prompts, how the agent and scripts work together, usage scheduling, completion review and replacement workers.
 
@@ -35,7 +35,8 @@ before using it.
 
 Use `re-launch enqueue REQUEST.json` for noninteractive submissions.
 Use the existing watcher and preserve the saved queue/history.
-Keep my current pause settings unless I explicitly change them.
+Keep my current launch mode and pause settings unless I explicitly change them.
+In manual mode, only add jobs to the queue; do not approve or launch them.
 
 Firmware and requested run settings:
 Firmware paths: [Insert paths]
@@ -46,6 +47,24 @@ Worker subagent cap: [1–8 for capped; otherwise 0]
 ```
 
 An agent submitting jobs uses the CLI; an agent acting as the watcher must also read [CONTROLLER.md](CONTROLLER.md) and follow its ownership checks and launch/review procedure. Submitting another job reuses the registered watcher. If watcher messages are paused, submission does not resume them.
+
+### Choose manual or automatic launches
+
+Manual mode is the default. Agents can add jobs with `re-launch enqueue REQUEST.json`; adding a queued job does not approve it to start. Open the [dashboard](http://100.91.196.107:8787), keep **Launch mode: Manual**, and click **Launch** beside the job you want to start. Approval applies to that job only and survives controller restarts. Usage freshness, limits, forecasts, scheduling pause and concurrency checks still apply; an approved job can wait for capacity. Its row shows why it is waiting.
+
+The dashboard mode selector switches between manual and automatic scheduling. Equivalent terminal commands are:
+
+```bash
+re-launch config launchMode manual
+re-launch config launchMode automatic
+re-launch launch DEVICE_OR_JOB_ID  # explicit approval for one job
+```
+
+An agent submitting jobs should preserve the mode and must not use `launch` or change to automatic without your explicit instruction. Existing workers still receive normal monitoring, continuation and usage-limit resumes. Creating a fresh replacement thread requires a new per-incident approval in manual mode; an earlier worker's approval does not authorize it.
+
+Clicking Launch requests one watcher turn even when periodic watcher messages are paused. If the watcher is busy, that notification waits until it is idle. This does not resume periodic messages. If the one-shot turn is blocked by usage, concurrency or provider availability, the approval remains saved; use **Retry launch** to request another turn while periodic messages remain paused. A lost delivery acknowledgment is retained as uncertain rather than automatically resending. The dashboard requires the registered watcher; if none is ready, create/adopt it using the watcher commands first.
+
+Dashboard launch controls are available to clients permitted to reach its Tailscale listener. Mutation requests require the dashboard's same-origin page and request token. Queue submission, model/settings and firmware selection remain in the CLI.
 
 ### Choose worker subagents
 
@@ -140,9 +159,9 @@ systemctl --user restart firmware-watch-dashboard firmware-watch-controller
 systemctl --user stop firmware-watch-controller  # stop notifications/sampling; workers continue
 ```
 
-These are user services, active with the user's service manager. They do not enable system-wide lingering. The controller has nothing to launch until the user submits an approved request. State and secrets are outside source control; back up `data/` locally. The SQLite database uses normal committed transactions, and each connection is closed after use.
+These are user services, active with the user's service manager. They do not enable system-wide lingering. The controller has nothing to launch until the user submits a queue request and its launch mode permits it. State and secrets are outside source control; back up `data/` locally. The SQLite database uses normal committed transactions, and each connection is closed after use.
 
-For scripted requests: `re-launch enqueue REQUEST.json` uses the same validation, idempotent request ID and watcher notification as the wizard. `--no-dispatch` saves the approved queue without creating/notifying a watcher. This flag is not a simulation: a later active watcher can process those queued records. Test with an isolated `--root` instead.
+For scripted requests: `re-launch enqueue REQUEST.json` uses the same validation, idempotent request ID and watcher notification as the wizard. `--no-dispatch` saves the approved queue without creating/notifying a watcher. This flag is not a simulation: a later active watcher can process those queued records once the launch mode and per-job approval permit it. Test with an isolated `--root` instead.
 
 If watcher bootstrap delivery is uncertain, inspect `t3 thread list --project /home/vesper/fw_re_factory --json`, identify the saved bootstrap title from events, then use `re-launch watcher set ID`. Do not clear the bootstrap guard and create a duplicate.
 

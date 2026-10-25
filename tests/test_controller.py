@@ -29,7 +29,7 @@ class Case(unittest.TestCase):
         self.s=Store(self.root,firmware=fw,projects=self.root/'RE')
         self.selection={'instanceId':'codex','model':'test','options':{'effort':'max','fast':False}}
         atomic_json(self.s.data/'capabilities.json',{'providers':[{'providerInstanceId':'codex','constraints':[], 'models':[{'id':'test','options':[{'id':'effort','label':'Effort','type':'select','options':[{'id':'max'}]},{'id':'fast','label':'Fast','type':'boolean'}]}]}]})
-        atomic_json(self.s.data/'config.json',{'maxParallel':3,'watcherProjectId':'project','wakeSeconds':240})
+        atomic_json(self.s.data/'config.json',{'maxParallel':3,'watcherProjectId':'project','wakeSeconds':240,'launchMode':'automatic'})
         self.payload={'requestId':str(uuid.uuid4()),'selection':self.selection,'maxParallel':3,'groups':[{'name':'Test device','slug':'test-device','files':[{'path':'vendor/fw.bin','kind':'firmware'}],'quotaPool':'codex','subagents':'none','subagentCap':0}]}
     def tearDown(self):self.tmp.cleanup()
     def enqueue(self):return self.s.enqueue(copy.deepcopy(self.payload))[0]
@@ -246,7 +246,7 @@ class Case(unittest.TestCase):
             self.fail('Unexpected T3 operation')
         with patch.object(self.s,'cli',side_effect=t3):
             for n in (1,2):
-                answers=['','','','','','',f'Wizard {n}',f'wizard-{n}','vendor/fw.bin','','','n','2','','240','','y']
+                answers=['','','','','','',f'Wizard {n}',f'wizard-{n}','vendor/fw.bin','','','n','2','','','240','','y']
                 with patch('builtins.input',side_effect=answers),redirect_stdout(StringIO()):result=wizard(self.s)
                 self.assertTrue(result['notification']['sent'])
         self.assertEqual(len(starts),1);self.assertEqual(len(self.s.jobs()),2)
@@ -342,7 +342,7 @@ class Case(unittest.TestCase):
         self.assertEqual(engine.forecast(self.s)[0]['intervals'],0)
         with self.s.connect() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM quota').fetchone()[0],4)
 
-    def test_dashboard_is_read_only_and_limits_hosts(self):
+    def test_dashboard_rejects_unsupported_mutations_and_limits_hosts(self):
         static=self.root/'static';static.mkdir();(static/'index.html').write_text('dashboard')
         server=dashboard.make_server(self.s,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         try:

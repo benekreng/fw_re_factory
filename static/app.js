@@ -11,10 +11,30 @@ const kv=(a,b)=>`<div class="kv"><span>${esc(a)}</span><span>${b}</span></div>`;
 const thread=(id,text='Open thread')=>/^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/.test(id||'')?`<a href="t3-thread://v1/${esc(id)}">${esc(text)} ↗</a>`:'—';
 const active=new Set(['preparing','prepared','launching','running','usage_limited','waiting','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching']);
 let state=null;
+let submitting=false;
+function launchControl(j){
+ const startable=['queued','preparing','prepared','replacement_ready'].includes(j.state);
+ if(!startable)return '—';
+ const d=state.plan.decisions.find(d=>d.jobId===j.id);
+ const approved=!!j.launchApproval;
+ return `<button type="button" data-launch="${esc(j.id)}" ${submitting?'disabled':''}>${approved?'Retry launch':'Launch'}</button><small>${esc(approved?'Launch requested. '+(d?.reason||'Waiting for the watcher.'):state.plan.launchMode==='manual'?'Waiting for your approval.':d?.reason||'Automatic scheduling enabled.')}</small>`;
+}
+async function operatorAction(path,payload){
+ if(submitting||!state)return;
+ submitting=true;renderJobs();$('launch-mode').disabled=true;
+ try{
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:JSON.stringify(payload)});
+  const result=await r.json();if(!r.ok)throw new Error(result.error||'Action failed');
+  await refresh();
+  $('action-status').textContent=result.approval?(result.notification?.sent?'Launch requested; watcher notified.':'Launch saved. '+(result.notification?.reason||'Waiting for the watcher.')):'Launch mode: '+result.launchMode+'.';
+ }catch(e){$('action-status').textContent=e.message;}
+ finally{submitting=false;renderJobs();$('launch-mode').value=state.plan.launchMode;$('launch-mode').disabled=false;}
+}
+
 function renderJobs(){
  if(!state)return;const filter=$('filter').value;
  const jobs=state.jobs.filter(j=>filter==='all'||(filter==='active'?active.has(j.state):filter==='attention'?['attention','incomplete','review_pending'].includes(j.state):j.state===filter));
- $('jobs').innerHTML=jobs.length?`<div class="table-wrap"><table><thead><tr><th>DEVICE / THREAD</th><th>STATE</th><th>WORKER PROFILE</th><th>PROGRESS / LAST SEEN</th><th>BROWSER</th></tr></thead><tbody>${jobs.map(j=>`<tr><td><strong>${esc(j.name)}</strong><small>${thread(j.thread_id,j.slug)}</small></td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':j.state==='queued'?'neutral':'')}</td><td>${esc(j.request.selection.model)}<small>${esc(j.request.selection.instanceId)} · ${esc(JSON.stringify(j.request.selection.options))}</small><small>Subagents: ${esc(j.request.subagents)}${j.request.subagents==='capped'?' / '+esc(j.request.subagentCap):''}</small></td><td>${esc(j.observation?.stage||j.observation?.summary||j.error||'Awaiting observation')}<small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td>${j.observation?.browserVerified?`<a href="http://127.0.0.1:${Number(j.port)}" target="_blank" rel="noreferrer">Open :${Number(j.port)} ↗</a>`:'Unverified'}</td></tr>`).join('')}</tbody></table></div>`:empty(state.jobs.length?'No workers match this filter':'Your next project starts here',state.jobs.length?'Choose another state.':'Run re-launch in a terminal to add approved firmware jobs.');
+ $('jobs').innerHTML=jobs.length?`<div class="table-wrap"><table><thead><tr><th>DEVICE / THREAD</th><th>STATE</th><th>WORKER PROFILE</th><th>PROGRESS / LAST SEEN</th><th>BROWSER</th><th>LAUNCH</th></tr></thead><tbody>${jobs.map(j=>`<tr><td><strong>${esc(j.name)}</strong><small>${thread(j.thread_id,j.slug)}</small></td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':j.state==='queued'?'neutral':'')}</td><td>${esc(j.request.selection.model)}<small>${esc(j.request.selection.instanceId)} · ${esc(JSON.stringify(j.request.selection.options))}</small><small>Subagents: ${esc(j.request.subagents)}${j.request.subagents==='capped'?' / '+esc(j.request.subagentCap):''}</small></td><td>${esc(j.observation?.stage||j.observation?.summary||j.error||'Awaiting observation')}<small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td>${j.observation?.browserVerified?`<a href="http://127.0.0.1:${Number(j.port)}" target="_blank" rel="noreferrer">Open :${Number(j.port)} ↗</a>`:'Unverified'}</td><td>${launchControl(j)}</td></tr>`).join('')}</tbody></table></div>`:empty(state.jobs.length?'No workers match this filter':'Your next project starts here',state.jobs.length?'Choose another state.':'Run re-launch in a terminal to add approved firmware jobs.');
 }
 function renderAccounts(){
  const usage=state.usage;const stale=!state.plan.quotaFresh;
@@ -44,8 +64,8 @@ function renderTokens(){
  $('tokens').innerHTML=t?['claude','codex'].map(p=>{const v=t[p];const n=v?.report?.totals;return `<div class="token-row"><h3>${esc(p==='claude'?'Claude':'Codex')}</h3>${v?.ok&&n?`<div class="token-number">${fmt.format(n.totalTokens??0)} <span class="muted small">reported tokens</span></div>${kv('Input / output',esc(fmt.format(n.inputTokens??0))+' / '+esc(fmt.format(n.outputTokens??0)))}${kv('Cache read / write',esc(fmt.format(n.cacheReadTokens??0))+' / '+esc(fmt.format(n.cacheCreationTokens??0)))}<p class="muted small">${v.report.sessions?.length??0} local sessions · cumulative report, not a sum of polls</p>`:empty('Unknown',v?.error||'No local token report')}</div>`;}).join('')+`<p class="note">Sample ${esc(time(t.time))}. Cache fields follow each CLI’s definitions. Local logs can be incomplete; tokens do not represent remaining subscription quota.</p>`:empty('No local token report yet','ccusage reads available Claude and Codex session logs.');
 }
 function render(data){
- state=data;$('error').hidden=true;$('sync').textContent='Updated '+new Date(data.time).toLocaleTimeString();$('connection').className='dot';
- const stats=[['ACTIVE WORKERS',data.jobs.filter(j=>active.has(j.state)).length,'of '+data.plan.maxParallel+' concurrent slots'],['APPROVED QUEUE',data.plan.queued,'waiting for capacity'],['VERIFIED COMPLETE',data.jobs.filter(j=>j.state==='verified_complete').length,'independently reviewed'],['NEEDS ATTENTION',data.jobs.filter(j=>['attention','incomplete','usage_limited'].includes(j.state)).length,'limits, findings or blockers']];
+ state=data;$('launch-mode').value=data.plan.launchMode;$('launch-mode-note').textContent=data.plan.launchMode==='manual'?'New workers wait for your Launch approval. Existing workers remain monitored.':'Eligible queued jobs can start automatically.';$('error').hidden=true;$('sync').textContent='Updated '+new Date(data.time).toLocaleTimeString();$('connection').className='dot';
+ const stats=[['ACTIVE WORKERS',data.jobs.filter(j=>active.has(j.state)).length,'of '+data.plan.maxParallel+' concurrent slots'],['QUEUED JOBS',data.plan.queued,data.plan.launchMode==='manual'?'click Launch to approve':'waiting for capacity'],['VERIFIED COMPLETE',data.jobs.filter(j=>j.state==='verified_complete').length,'independently reviewed'],['NEEDS ATTENTION',data.jobs.filter(j=>['attention','incomplete','usage_limited'].includes(j.state)).length,'limits, findings or blockers']];
  $('stats').innerHTML=stats.map(([l,v,n])=>`<div class="stat"><span class="label">${l}</span><span class="value">${v}</span><small>${esc(n)}</small></div>`).join('');
  $('watch-state').textContent=data.config.watcherMessagesPaused?'messages paused':label(data.watcher.phase);
  $('watcher').innerHTML=kv('Thread',thread(data.watcher.thread))+kv('Ownership generation',esc(data.watcher.epoch))+kv('Last heartbeat',esc(time(data.watcher.heartbeat)))+kv('Wake interval',esc(data.config.wakeSeconds??'—')+' seconds')+`<p class="note">${data.watcher.thread?'Changing the watcher preserves existing workers and history.':'A watcher is created when you submit your first queue request.'}</p>`;
@@ -60,4 +80,6 @@ function render(data){
  $('events').innerHTML=data.events.length?data.events.slice(0,35).map(e=>`<div class="event"><time>${esc(time(e.time))}</time><span>${esc(label(e.kind))}</span><pre>${esc(e.detail)}</pre></div>`).join(''):empty('A clean audit trail','Launches, handovers and controller actions will appear here.');
 }
 async function refresh(){try{const r=await fetch('/api/status');if(!r.ok)throw new Error('Dashboard request failed: HTTP '+r.status);render(await r.json());}catch(e){$('error').hidden=false;$('error').textContent=e.message+' Displayed data may be stale.';$('sync').textContent='Connection lost';}}
+$('jobs').addEventListener('click',e=>{const button=e.target.closest('[data-launch]');if(button)operatorAction('/api/jobs/'+button.dataset.launch+'/launch',{});});
+$('launch-mode').addEventListener('change',e=>operatorAction('/api/launch-mode',{mode:e.target.value}));
 $('filter').addEventListener('change',renderJobs);$('window-filter').addEventListener('change',()=>state&&renderChart());refresh();setInterval(refresh,15000);

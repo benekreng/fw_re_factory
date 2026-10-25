@@ -250,6 +250,7 @@ def main():
                 job=store.job(args.id)
                 if job['state']!='prepared' or not job['project_id'] or job['thread_id']:
                     raise Problem('Only a prepared job with its project recorded can start a launch.')
+                engine.require_launch_approval(store,job)
                 result=store.patch(args.id,state='launching')
             elif args.action=='thread': result=record_thread(store,args.id,json.load(sys.stdin))
             elif args.action=='observe':

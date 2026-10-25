@@ -118,6 +118,17 @@ class RecoveryCase(unittest.TestCase):
         with patch.object(self.s,'cli',side_effect=self.cli):
             with self.assertRaises(Problem):self.call('launch',r['id'])
         self.assertEqual(recovery.get(self.s,r['id'])['phase'],'replacement_ready')
+
+    def test_manual_replacement_needs_its_own_approval(self):
+        r=self.ready();self.quota(1);engine.set_launch_mode(self.s,'manual')
+        with self.s.connect() as c:
+            c.execute('INSERT INTO launch_approvals VALUES (?,?,?,NULL)',(self.j['id'],'initial','old'))
+        with patch.object(self.s,'cli',side_effect=self.cli):
+            with self.assertRaisesRegex(Problem,'Manual mode'):self.call('launch',r['id'])
+            approval=engine.request_launch(self.s,self.j['id'])
+            self.assertEqual(approval['target'],'recovery:'+r['id'])
+            self.call('launch',r['id'])
+            self.assertEqual(recovery.get(self.s,r['id'])['phase'],'launching')
     def test_launch_intent_cannot_be_repeated_after_lost_response(self):
         r=self.launch()
         with patch.object(self.s,'cli',side_effect=self.cli) as calls:

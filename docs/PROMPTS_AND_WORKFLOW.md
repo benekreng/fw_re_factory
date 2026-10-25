@@ -1,6 +1,6 @@
 # fw_re_factory: worker prompts, watcher prompts and the workflow
 
-This guide explains what each agent receives and how the Python controller works with the watcher. It reflects the implementation as of 25 October 2026. Examples are documentation, not commands to launch or resume a worker.
+This guide includes manual launch mode. It explains what each agent receives and how the Python controller works with the watcher. It reflects the implementation as of 25 October 2026. Examples are documentation, not commands to launch or resume a worker.
 
 This factory depends on [benekreng/bens_skills](https://github.com/benekreng/bens_skills) for the reusable worker task and the complete `firmware-rewrite` skill. See the [README dependency section](../README.md#skill-dependency) for required files and local paths.
 
@@ -10,7 +10,7 @@ This factory depends on [benekreng/bens_skills](https://github.com/benekreng/ben
 - **Python controller (`engine.py`, `controller.py`, `recovery.py`):** persists the queue and observations, samples usage, estimates depletion, checks admission and ownership, prepares prompts, records checks, and sends watcher wake messages. The daemon runs without an agent conversation being active.
 - **Watcher agent:** reads the controller's instructions and saved state, uses T3 to launch workers, examines their actual output, resumes unfinished work and independently audits completion. The agent performs the source and behavior review; Python enforces the recorded state transitions and checks.
 - **Worker agents:** carry out the firmware-rewrite task in their own device directories using their saved model/settings and subagent policy.
-- **Dashboard:** reads controller state and displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
+- **Dashboard:** displays controller state, provides a manual/automatic mode selector, and lets the operator approve individual queued jobs or prepared replacements with Launch. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
 
 The database is the persistent record. The watcher can be replaced without recreating the queue or losing usage and review history.
 
@@ -160,7 +160,8 @@ re-launch watcher adopt SELF_THREAD_ID.
 
 No work before ownership is ready.
 
-Use the saved approved queue; do not ask for a second confirmation.
+Use the saved queue according to its launch mode. Do not request
+another confirmation for jobs whose launch is already authorized.
 ```
 
 Initial creation uses the dedicated watcher project's configured default profile. The watcher verifies inherited provider/model/options against the configured watcher selection. An uncertain creation must be reconciled against existing T3 threads before another is attempted.
@@ -229,7 +230,9 @@ Optional checkpoint pauses ask a worker to save/commit and acknowledge a pause w
 ### 5. Starting queued workers
 
 ```text
-No additional approval is needed for a saved queue request.
+In manual mode, queue submission does not authorize launch; wait
+for the operator approval. In automatic mode, a saved queue request
+needs no additional approval.
 Do not invent devices or add firmware beyond the approved files.
 
 - Refresh usage and examine admission decisions.
@@ -303,7 +306,7 @@ A matching incident is persisted before repair or launch actions. Bounded repair
 ## How a run works from your point of view
 
 1. **Submit work.** Run `re-launch`, select firmware and options, review the concrete request, and submit it. The controller saves the approved queue. The first request can bootstrap the watcher; later requests reuse it.
-2. **Wait for admission.** The daemon samples usage and wakes an idle watcher when permitted. The controller's plan explains whether a queued job can start. The watcher consumes that decision and creates the device project and worker through T3.
+2. **Choose when to launch.** In manual mode (the default), open the dashboard and click Launch for the chosen job; other jobs stay unapproved. In automatic mode, eligible queued jobs can start without a click. Both modes preserve quota and concurrency checks. **Wait for admission.** The daemon samples usage and wakes an idle watcher when permitted. The controller's plan explains whether a queued job can start. The watcher consumes that decision and creates the device project and worker through T3.
 3. **Let workers run.** Workers do the RE. The watcher reads progress directly and intervenes when an agent stopped with authorized work remaining. Routine checks stay short; full source review waits for relevant evidence.
 4. **Adjust concurrency using measurements.** The controller estimates percentage-point depletion per hour, time to exhaustion, and demand by active worker profile. Forecasts inform whether to add another worker. It requires calibration before expanding concurrency, respects hard limits and concurrency caps, and treats missing data as a hold. Different model/settings/subagent mixes need new measurements.
 5. **Handle limits and resets.** The watcher retries limited workers in the same conversations after recovery evidence. The default `short-window` policy prioritizes Claude's five-hour window where available, while still blocking hard weekly exhaustion. `weekly-first` and `balanced` are alternatives. Other account activity affects the estimates, so exact depletion at reset is not guaranteed.
@@ -318,7 +321,7 @@ The dashboard displays the controller's latest records. The Python daemon keeps 
 
 These controls have separate effects:
 
-- `re-launch config watcherMessagesPaused true` suppresses automatic watcher messages, including forced wakes. Usage sampling and existing workers continue. This is the user's currently requested pause as of this guide's date.
+- `re-launch config watcherMessagesPaused true` suppresses automatic watcher messages, including ordinary forced wakes. An explicit Launch action creates a durable request for one watcher turn even while this flag remains true; busy watchers receive it when idle. If that turn is blocked, Retry launch requests another turn without resuming periodic notifications. Usage sampling and existing workers continue. This is the user's currently requested pause as of this guide's date.
 - `re-launch config schedulingPaused true` holds admission for launches/resumes while monitoring continues.
 - `re-launch recovery disable` prevents new automatic recovery starts. It does not resume notifications or stop normal workers.
 
@@ -335,5 +338,7 @@ Changing a policy does not silently resume watcher messages. When the user choos
 - Independent audit: [REVIEW.md](REVIEW.md), adapted from the earlier firmware Night Watch criteria.
 - Persistent recovery: [recovery.py](../recovery.py), [THREAD_RECOVERY.md](THREAD_RECOVERY.md) and [RECOVERY_MESSAGE.txt](RECOVERY_MESSAGE.txt).
 - Database: `data/launcher.sqlite`; private configuration and recovery policy: `data/config.json` and `data/recovery-policy.json`.
+
+Launch approval is persisted separately from queue submission. Normal monitoring/resumes of existing workers continue according to the watcher pause settings; each fresh replacement in manual mode needs an approval matching its recovery incident. See the [README launch-mode section](../README.md#choose-manual-or-automatic-launches) for controls and the CLI equivalent.
 
 The guide reuses and explains these components. It does not replace their live instructions, embed the full skill, or recreate the old Night Watch timer.

@@ -35,6 +35,8 @@ def initialize(s):
           active_workers INTEGER, profile TEXT);
         CREATE INDEX IF NOT EXISTS quota_history ON quota(account,window,time);
         CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS launch_approvals(job TEXT PRIMARY KEY, target TEXT NOT NULL,
+          requested TEXT NOT NULL, notified TEXT);
         CREATE TABLE IF NOT EXISTS recoveries(id TEXT PRIMARY KEY, job TEXT NOT NULL,
           worker_thread TEXT NOT NULL, phase TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL,
           policy TEXT NOT NULL, rule_id TEXT NOT NULL, evidence TEXT NOT NULL,
@@ -111,7 +113,7 @@ def bootstrap(s):
     event(s,'watcher_bootstrap',{'title':marker})
     message=('Read '+str(s.root/'CONTROLLER.md')+'. This is a new watcher. Find your T3 thread ID, '
              'then run re-launch watcher adopt SELF_THREAD_ID. No work before ownership is ready. '
-             'Use the saved approved queue; do not ask for a second confirmation.')
+             'Use the saved queue according to its launch mode. Do not request another confirmation for jobs whose launch is already authorized.')
     result=unwrap(s.cli('thread','start',config['watcherProjectId'],'-','--title',marker,'--json',input=message))
     tid=result.get('threadId') or result.get('id') or result.get('thread',{}).get('threadId') or result.get('thread',{}).get('id')
     if not tid: raise Problem('T3 returned no watcher ID; bootstrap is uncertain. Reconcile before retrying.')
@@ -121,25 +123,91 @@ def bootstrap(s):
 
 def wake(s, reason='periodic check', force=False):
     with lock(s):
-        if s.config().get('watcherMessagesPaused'):
+        requested = pending_launch_notifications(s)
+        if s.config().get('watcherMessagesPaused') and not requested:
             return {'sent':False,'reason':'watcher messages paused by the user'}
         o=owner(s)
         if not o['thread'] or o['phase']!='ready': return {'sent':False,'reason':'no ready watcher'}
         seconds=s.config().get('wakeSeconds',240)
-        if not force and o['last_wake'] and time.time()-stamp(o['last_wake']) < seconds:
+        if not force and not requested and o['last_wake'] and time.time()-stamp(o['last_wake']) < seconds:
             return {'sent':False,'reason':'coalesced'}
         shown=unwrap(s.cli('thread','show',o['thread'],'--messages','0','--json'))
         t=shown.get('thread',shown)
         if t.get('activeRunId') or t.get('pendingRequestCount',0):
             return {'sent':False,'reason':'watcher is already working'}
+        if requested:reason='user requested launch for '+', '.join(x['job'] for x in requested)
         message=(f'Firmware watch: {reason}. Read {s.root}/CONTROLLER.md. '
                  f'Ownership: thread={o["thread"]} epoch={o["epoch"]}. '
                  'Fence ownership before acting. Run the short check first; review sources only when needed.')
         # Persist delivery intent before send so timeout does not cause rapid repeated nudges.
-        with s.connect() as c: c.execute('UPDATE watcher SET last_wake=? WHERE id=1',(now(),))
+        with s.connect() as c:
+            c.execute('UPDATE watcher SET last_wake=? WHERE id=1',(now(),))
+            for request in requested:
+                c.execute('UPDATE launch_approvals SET notified=? WHERE job=? AND target=?',
+                          (now(),request['job'],request['target']))
         s.cli('thread','send',o['thread'],'-','--json',input=message)
         event(s,'watcher_wake',{'epoch':o['epoch'],'reason':reason})
         return {'sent':True,'thread':o['thread'],'epoch':o['epoch']}
+
+
+def launch_target(job):
+    if job['state']=='replacement_ready':
+        rid=(job.get('observation') or {}).get('recoveryId')
+        if not rid:raise Problem('Replacement recovery identity is missing.',409)
+        return 'recovery:'+rid
+    return 'initial'
+
+
+def launch_approval(s, job):
+    with s.connect() as c:
+        row=c.execute('SELECT * FROM launch_approvals WHERE job=? AND target=?',
+                      (job['id'],launch_target(job))).fetchone()
+    return dict(row) if row else None
+
+
+def require_launch_approval(s, job):
+    if s.config().get('launchMode','manual')=='manual' and not launch_approval(s,job):
+        raise Problem('Manual mode: waiting for you to click Launch in the dashboard.',409)
+
+
+def request_launch(s, identifier):
+    """Operator approval only; never starts a worker or changes its saved settings."""
+    with lock(s):
+        jobs=s.jobs();job=next((j for j in jobs if identifier in (j['id'],j['slug'])),None)
+        if not job:raise Problem('Unknown launcher job.',404)
+        if job['state'] not in ('queued','preparing','prepared','replacement_ready'):
+            raise Problem('Only an unstarted job or prepared replacement can be launched.',409)
+        if job.get('thread_id') and job['state']!='replacement_ready':
+            raise Problem('This job already has a worker.',409)
+        target=launch_target(job)
+        with s.connect() as c:
+            c.execute('''INSERT INTO launch_approvals(job,target,requested,notified) VALUES (?,?,?,NULL)
+              ON CONFLICT(job) DO UPDATE SET target=excluded.target, requested=excluded.requested, notified=NULL''',
+                      (job['id'],target,now()))
+        event(s,'launch_requested',{'target':target},job['id'])
+        return launch_approval(s,job)
+
+
+def pending_launch_notifications(s):
+    with s.connect() as c:rows=[dict(r) for r in c.execute('SELECT * FROM launch_approvals WHERE notified IS NULL')]
+    jobs={j['id']:j for j in s.jobs()}
+    return [r for r in rows if r['job'] in jobs and jobs[r['job']]['state'] in ('queued','preparing','prepared','replacement_ready')
+            and r['target']==launch_target(jobs[r['job']])]
+
+
+def notify_launch(s):
+    # Approval is already durable; an unavailable watcher must not undo or hide it.
+    try:return wake(s,'user requested launch',force=True)
+    except Exception as error:return {'sent':False,'reason':str(error)}
+
+
+def set_launch_mode(s, mode):
+    from controller import atomic_json
+    if mode not in ('manual','automatic'):raise Problem('Launch mode must be manual or automatic.')
+    with lock(s):
+        config=s.config();config['launchMode']=mode;atomic_json(s.data/'config.json',config)
+        event(s,'launch_mode_changed',{'mode':mode})
+    return {'launchMode':mode}
 
 
 def replace_worker(s, identifier, thread, expected_old=None, reason='User supplied a replacement worker', *, _locked=False, _recovery_id=None):
@@ -402,7 +470,9 @@ def plan(s):
             families=[x for x in ('opus','sonnet','haiku') if x in scope]
             return not families or any(x in job['request']['selection']['model'].lower() for x in families)
         reason=None
-        if config.get('schedulingPaused'):reason='Scheduling is paused by the user; monitoring continues.'
+        if config.get('launchMode','manual')=='manual' and job['state'] in ('queued','replacement_ready') and not launch_approval(s,job):
+            reason='Manual mode: waiting for you to click Launch in the dashboard.'
+        elif config.get('schedulingPaused'):reason='Scheduling is paused by the user; monitoring continues.'
         elif not fresh:reason='Usage is missing or stale; sample before admission.'
         elif (stamp((job.get('observation') or {}).get('resetAt')) or 0)>time.time():reason='The worker reported a future usage reset; wait until that boundary.'
         elif not accounts:reason='No enabled account in the selected quota pool.'
@@ -470,7 +540,7 @@ def plan(s):
             expiry=stamp(g.get('ends_at',g.get('expires_at',g.get('expiresAt'))))
             if expiry and 0<expiry-time.time()<86400 and (g.get('resets_left',1) or 0)>0:
                 recommendations.append({'account':a['account'],'action':'Consider reset voucher before expiry; user redemption required.','expires':iso(expiry)})
-    return {'time':now(),'policy':config.get('policy','short-window'),'active':len(active),'queued':len(queued),
+    return {'time':now(),'launchMode':config.get('launchMode','manual'),'policy':config.get('policy','short-window'),'active':len(active),'queued':len(queued),
             'maxParallel':config.get('maxParallel',2),'quotaFresh':bool(fresh),'decisions':decisions,
             'rotation':'unverified; no account mutations','vouchers':'recommendations only; no redemption','recommendations':recommendations,'checkpointRequests':pause_requests}
 
@@ -480,7 +550,9 @@ def dashboard(s):
     with s.connect() as c:
         events=[dict(r) for r in c.execute('SELECT * FROM events ORDER BY id DESC LIMIT 100')]
         rows=[dict(r) for r in c.execute("SELECT * FROM quota WHERE time>=? ORDER BY id DESC LIMIT 5000",(dt.datetime.fromtimestamp(time.time()-86400,dt.timezone.utc).isoformat(),))][::-1]
-    return dict(time=now(),watcher=owner(s),jobs=s.jobs(),plan=plan(s),usage=latest(s,'quota'),
+    jobs=s.jobs()
+    for job in jobs:job['launchApproval']=launch_approval(s,job)
+    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=plan(s),usage=latest(s,'quota'),
                 recoveries=recovery.records(s),recoveryPolicy=recovery.policy(s),
                 forecasts=forecast(s),history=rows,tokens=latest(s,'tokens'),events=events,
                 config={k:s.config().get(k) for k in ('wakeSeconds','sampleSeconds','maxParallel','policy','watcherMessagesPaused')})

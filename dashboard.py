@@ -1,34 +1,64 @@
-"""Read-only dashboard bound to a selected network address."""
+"""Dashboard with same-origin operator launch controls."""
+import hmac
 import json
+import re
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import engine
+from app import Problem
 
 
 def make_server(store, port=8787, host='127.0.0.1'):
+    csrf_token=secrets.token_urlsafe(32)
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.headers.get('Host','').split(':')[0] not in (host,'127.0.0.1','localhost'):
-                self.send_error(403,'Dashboard host required');return
-            path=urlparse(self.path).path
-            allowed={'/':('index.html','text/html'),'/app.js':('app.js','text/javascript'),'/style.css':('style.css','text/css')}
-            try:
-                if path=='/api/status':
-                    data=json.dumps(engine.dashboard(store)).encode();mime='application/json';code=200
-                elif path in allowed:
-                    filename,mime=allowed[path];data=(store.root/'static'/filename).read_bytes();code=200
-                else:data=b'{"error":"Not found"}';mime='application/json';code=404
-            except Exception:
-                data=b'{"error":"Dashboard data unavailable; check service logs."}';mime='application/json';code=500
+        def valid_host(self):
+            return self.headers.get('Host','').split(':')[0] in (host,'127.0.0.1','localhost')
+        def respond(self,data,mime='application/json',code=200):
+            if not isinstance(data,bytes):data=json.dumps(data).encode()
             self.send_response(code)
             for key,value in {'Content-Type':mime+'; charset=utf-8','Content-Length':str(len(data)),
               'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
               'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(data)
-        def do_POST(self):self.send_error(405,'Dashboard is read-only')
-        do_PUT=do_POST
-        do_DELETE=do_POST
-        do_PATCH=do_POST
+        def do_GET(self):
+            if not self.valid_host():
+                self.send_error(403,'Dashboard host required');return
+            path=urlparse(self.path).path
+            allowed={'/':('index.html','text/html'),'/app.js':('app.js','text/javascript'),'/style.css':('style.css','text/css')}
+            try:
+                if path=='/api/status':
+                    data=json.dumps(engine.dashboard(store)|{'csrfToken':csrf_token}).encode();mime='application/json';code=200
+                elif path in allowed:
+                    filename,mime=allowed[path];data=(store.root/'static'/filename).read_bytes();code=200
+                else:data=b'{"error":"Not found"}';mime='application/json';code=404
+            except Exception:
+                data=b'{"error":"Dashboard data unavailable; check service logs."}';mime='application/json';code=500
+            self.respond(data,mime,code)
+        def do_POST(self):
+            path=urlparse(self.path).path
+            match=re.fullmatch(r'/api/jobs/([a-zA-Z0-9_-]{1,64})/launch',path)
+            if path!='/api/launch-mode' and not match:
+                self.respond({'error':'Unsupported dashboard action'},code=405);return
+            if not self.valid_host() or self.headers.get('Origin')!='http://'+self.headers.get('Host','') or not hmac.compare_digest(self.headers.get('X-CSRF-Token','').encode(),csrf_token.encode()):
+                self.respond({'error':'Use the launch controls from this dashboard page.'},code=403);return
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=4096 or self.headers.get('Content-Type','').split(';')[0]!='application/json':
+                    raise Problem('Send a small JSON object.')
+                payload=json.loads(self.rfile.read(length))
+                if not isinstance(payload,dict):raise Problem('Expected a JSON object.')
+                if match:
+                    result={'approval':engine.request_launch(store,match[1]),'notification':engine.notify_launch(store)}
+                else:result=engine.set_launch_mode(store,payload.get('mode'))
+                self.respond(result)
+            except Problem as error:self.respond({'error':str(error)},code=error.status)
+            except (ValueError,UnicodeDecodeError):self.respond({'error':'Invalid JSON request.'},code=400)
+            except Exception:self.respond({'error':'Dashboard action failed; check controller records before retrying.'},code=500)
+        def unsupported(self):self.respond({'error':'Unsupported dashboard action'},code=405)
+        do_PUT=unsupported
+        do_DELETE=unsupported
+        do_PATCH=unsupported
     return ThreadingHTTPServer((host,port),Handler)
 
 
