@@ -71,20 +71,22 @@ function renderJobs(){
 function renderAccounts(){
  const usage=state.usage;
  const stale=!state.plan.quotaFresh;
- $('sample-time').textContent=usage?`Updated ${time(usage.time)}${stale?' · stale or incomplete':''}`:'No samples yet';
+ const incomplete=usage?.accounts?.some(a=>a.errors.length||!a.windows.length);
+ $('sample-time').textContent=usage?`Sample ${time(usage.time)}${stale?' · stale':''}${incomplete?' · incomplete':''}`:'No samples yet';
  if(!usage?.accounts?.length){$('accounts').innerHTML=empty('Usage unavailable.',usage?.error||'Waiting for a usage sample.');return;}
  const accountDetailsOpen=document.getElementById('account-details')?.open;
  const rows=usage.accounts.map(a=>{
   const forecasts=state.forecasts.filter(f=>f.account===a.account);
   const count=a.resets?.available_count;
-  const windows=a.windows.length?a.windows:[null];
+  const lastKnown=!a.windows.length&&a.lastKnown;
+  const windows=a.windows.length?a.windows:lastKnown?.windows||[null];
   return `<tbody>${windows.map((w,i)=>{
-   const account=i===0?`<th scope="rowgroup" class="account-name" rowspan="${windows.length}">${esc(a.provider==='claude'?'Claude':'Codex')}<small>${esc(a.account)}${a.disabled?' · disabled':''}</small>${count!=null?`<small>Reset vouchers: ${esc(count)}</small>`:''}</th>`:'';
+   const account=i===0?`<th scope="rowgroup" class="account-name" rowspan="${windows.length}">${esc(a.provider==='claude'?'Claude':'Codex')}<small>${esc(a.account)}${a.disabled?' · disabled':''}</small>${lastKnown?`<small class="warn-text">Last known · ${esc(time(lastKnown.time))}</small>`:''}${count!=null?`<small>Reset vouchers: ${esc(count)}</small>`:''}${a.nextCheckAt&&a.errors.length?`<small>Next check ${esc(time(a.nextCheckAt))}</small>`:''}</th>`:'';
    if(!w)return `<tr>${account}<td colspan="4" class="warn-text">Usage unknown${a.errors.length?': '+esc(a.errors.join('; ')):''}</td></tr>`;
    const prediction=forecasts.find(f=>f.window===w.window);
    const name=w.seconds===18000?'5-hour':w.seconds===604800?'Weekly':label(w.window);
    const scope=w.scope&&w.scope!=='all'?' · '+label(w.scope).replace(/^(seven day|five hour)\s*/, '').replace(/:$/, ''):'';
-   const rate=prediction?.ratePerHour!=null?fmt.format(prediction.ratePerHour)+' pp/h'+(prediction.confidence==='low'?'<small>Early estimate</small>':''):`<span title="${esc(prediction?.rateReason||'Waiting for usage samples at least 30 seconds apart.')}">Collecting samples</span>`;
+   const rate=lastKnown?'Unavailable':prediction?.ratePerHour!=null?fmt.format(prediction.ratePerHour)+' pp/h'+(prediction.confidence==='low'?'<small>Early estimate</small>':''):`<span title="${esc(prediction?.rateReason||'Waiting for usage samples at least 30 seconds apart.')}">Collecting samples</span>`;
    return `<tr>${account}<td>${esc(name+scope)}</td><td class="${w.used>=98?'warn-text':''}">${fmt.format(w.used)}%</td><td>${esc(relative(w.reset_at))}${w.reset_at?`<small>${esc(time(w.reset_at))}</small>`:''}</td><td>${rate}${prediction?.exhaustHours!=null?`<small>Limit in ~${fmt.format(prediction.exhaustHours)} h</small>`:''}${a.errors.length?`<small class="warn-text">${esc(a.errors.join('; '))}</small>`:''}</td></tr>`;
   }).join('')}</tbody>`;
  }).join('');

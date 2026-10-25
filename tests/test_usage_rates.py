@@ -104,3 +104,49 @@ class UsageRatesCase(unittest.TestCase):
             client.close()
         finally:
             server.shutdown();server.server_close();thread.join()
+
+    def test_failed_lookup_shows_last_known_only_for_display(self):
+        self.quota(42,self.at(),self.at(240),'claude')
+        engine.ingest(self.s,{'ok':False,'checked_at':self.at(5),'accounts':[{
+            'provider':'claude','auth_index':'stable','usage':None,'resets':None,
+            'errors':['Provider usage request failed: HTTP 429']}]})
+        raw=engine.latest(self.s,'quota')['accounts'][0]
+        self.assertEqual(raw['windows'],[]);self.assertNotIn('lastKnown',raw)
+        view=engine.display_usage(self.s)['accounts'][0]
+        self.assertEqual(view['lastKnown']['windows'][0]['used'],42)
+        self.assertEqual(view['lastKnown']['time'],self.at())
+        self.assertIsNone(view['resets'])
+        self.assertEqual(engine.forecast(self.s),[])
+        self.assertEqual(engine.latest(self.s,'quota')['accounts'][0]['windows'],[])
+
+    def test_shared_cache_never_adds_a_rate_interval_or_admission_sample(self):
+        payload={'ok':True,'checked_at':self.at(),'accounts':[{'provider':'claude','auth_index':'stable',
+            'checked_at':self.at(),'next_check_at':self.at(4),'cached':False,
+            'usage':{'five_hour':{'utilization':42,'resets_at':self.at(240)}}}]}
+        engine.ingest(self.s,payload)
+        payload['checked_at']=self.at(1);payload['accounts'][0]['cached']=True
+        engine.ingest(self.s,payload)
+        with self.s.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM quota').fetchone()[0],1)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM samples WHERE kind='quota'").fetchone()[0],1)
+        self.assertEqual(engine.forecast(self.s)[0]['intervals'],0)
+        self.assertEqual(engine.latest(self.s,'quota')['time'],self.at())
+
+    def test_full_reader_failure_keeps_display_history_but_no_launch_data(self):
+        self.quota(42)
+        with patch('engine.subprocess.run',side_effect=OSError('offline')):engine.sample_usage(self.s)
+        self.assertFalse(engine.plan(self.s)['quotaFresh'])
+        self.assertEqual(engine.latest(self.s,'quota')['accounts'],[])
+        account=engine.display_usage(self.s)['accounts'][0]
+        self.assertEqual(account['lastKnown']['windows'][0]['used'],42)
+        self.assertIn('offline',account['errors'][0])
+
+    def test_stale_account_cache_cannot_authorize_launch(self):
+        import datetime as dt
+        from controller import claim
+        from app import Problem,now
+        job=fixtures.Case.enqueue(self)
+        old=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=1)).isoformat()
+        engine.ingest(self.s,{'ok':True,'checked_at':now(),'accounts':[{'provider':'codex','auth_index':'stable',
+            'checked_at':old,'usage':{'rate_limit':{'primary_window':{'used_percent':10}}}}]})
+        with self.assertRaisesRegex(Problem,'stale'):claim(self.s,job['id'])

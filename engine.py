@@ -362,8 +362,10 @@ def ingest(s, payload):
             identity=str(a.get('auth_index') or a.get('name') or '')
             if not identity:continue
             key=provider+'-'+hashlib.sha256(identity.encode()).hexdigest()[:12]
+            account_at=iso(a.get('checked_at')) or at
             entry=dict(account=key,provider=provider,disabled=bool(a.get('disabled')),
-                       errors=[str(e)[:600] for e in a.get('errors',[])],resets=a.get('resets'),windows=windows(a))
+                       errors=[str(e)[:600] for e in a.get('errors',[])],resets=a.get('resets'),windows=windows(a),
+                       checkedAt=account_at,nextCheckAt=iso(a.get('next_check_at')),rateLimited=bool(a.get('rate_limited')))
             accounts.append(entry)
             old=next((x for x in previous.get('accounts',[]) if x['account']==key),None)
             old_count=(old.get('resets') or {}).get('available_count') if old else None
@@ -376,14 +378,18 @@ def ingest(s, payload):
                 profile=json.dumps(sorted(json.dumps(p,sort_keys=True) for p in profiles))
                 for w in entry['windows']:
                     prev=c.execute('SELECT * FROM quota WHERE account=? AND window=? ORDER BY id DESC LIMIT 1',(key,w['window'])).fetchone()
+                    # A shared cached result is one observation, not a new flat rate interval.
+                    if prev and stamp(prev['time'])>=stamp(account_at):continue
                     if prev and w['used']<prev['used']-.5:
                         boundary=stamp(prev['reset_at'])
-                        crossed=boundary is not None and stamp(prev['time'])<=boundary<=stamp(at)
+                        crossed=boundary is not None and stamp(prev['time'])<=boundary<=stamp(account_at)
                         detail={'account':key,'window':w['window'],'before':prev['used'],'after':w['used'],
                                 'classification':'scheduled reset' if crossed else 'rolling recovery or possible provider replenishment'}
                         c.execute('INSERT INTO events(time,kind,detail) VALUES (?,?,?)',(at,'quota_decreased',json.dumps(detail)))
                     c.execute('INSERT INTO quota(time,account,provider,window,used,reset_at,seconds,scope,active,active_workers,profile) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                        (at,key,provider,w['window'],w['used'],w['reset_at'],w['seconds'],w['scope'],int(w['active']),len(running),profile))
+                          (account_at,key,provider,w['window'],w['used'],w['reset_at'],w['seconds'],w['scope'],int(w['active']),len(running),profile))
+    if previous.get('accounts')==accounts and previous.get('ok')==payload.get('ok'):
+        return {'time':previous['time'],'accounts':accounts}
     save_sample(s,'quota',dict(ok=payload.get('ok'),accounts=accounts),at)
     return {'time':at,'accounts':accounts}
 
@@ -505,6 +511,8 @@ def plan(s):
         elif (stamp((job.get('observation') or {}).get('resetAt')) or 0)>time.time():reason='The worker reported a future usage reset; wait until that boundary.'
         elif not accounts:reason='No enabled account in the selected quota pool.'
         elif any(a['errors'] or not a['windows'] for a in accounts):reason='Account usage is incomplete; routing is not verified.'
+        elif any(not 0<=time.time()-(stamp(a.get('checkedAt')) or stamp(current['time']))<config.get('quotaFreshSeconds',600) for a in accounts):
+            reason='Account usage is stale; wait for a fresh provider sample.'
         elif any(w['used']>=98 for a in accounts for w in a['windows'] if w['active'] and applies(w)):reason='An enabled account is at its limit; rotation is not verified.'
         elif not manual and available<=0 and not sample_used:reason='Automatic worker concurrency limit reached.'
         elif not manual and sample_used:reason='Automatic mode already admitted a job from this quota sample; waiting for the next sample.'
@@ -600,6 +608,27 @@ def launch_progress(job, decision=None):
     return None
 
 
+def display_usage(s):
+    """Last-known values are a display aid only; admission uses latest raw samples."""
+    usage=latest(s,'quota')
+    if not usage:return None
+    with s.connect() as c:
+        if usage.get('error') and not usage.get('accounts'):
+            for row in c.execute("SELECT payload FROM samples WHERE kind='quota' ORDER BY id DESC"):
+                previous=json.loads(row[0])
+                if previous.get('accounts'):
+                    usage['accounts']=[dict(a,windows=[],resets=None,errors=[usage['error']]) for a in previous['accounts']]
+                    break
+        for account in usage.get('accounts',[]):
+            if account['windows']:continue
+            rows=c.execute('SELECT * FROM quota WHERE account=? AND time=(SELECT MAX(time) FROM quota WHERE account=?) ORDER BY id',
+                           (account['account'],account['account'])).fetchall()
+            if rows:
+                account['lastKnown']={'time':rows[0]['time'],'windows':[
+                    {**{k:r[k] for k in ('window','used','reset_at','seconds','scope')},'active':bool(r['active'])} for r in rows]}
+    return usage
+
+
 def dashboard(s):
     import recovery
     from host_usage import host_usage
@@ -620,7 +649,7 @@ def dashboard(s):
         job['replaceAvailable']=bool(job.get('thread_id') and job.get('project_id') and (job['state'] in worker_control.STOPPABLE | {'stop_requested','stopped'} or job['id'] in replacements))
         job['stopAvailable']=bool(job.get('thread_id') and job['state'] in worker_control.STOPPABLE)
     policy_state=recovery.policy_snapshot(s)
-    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=admission,usage=latest(s,'quota'),hostUsage=host_usage.sample(),
+    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=admission,usage=display_usage(s),hostUsage=host_usage.sample(),
                 recoveries=recovery.records(s),recoveryPolicy=policy_state['policy'],
                 recoveryPolicyRevision=policy_state['revision'],recoveryPolicyNotification=policy_state['notification'],
                 forecasts=forecast(s),history=rows,tokens=latest(s,'tokens'),events=events,
