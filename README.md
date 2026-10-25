@@ -50,7 +50,7 @@ An agent submitting jobs uses the CLI; an agent acting as the watcher must also 
 
 ### Choose manual or automatic launches
 
-Manual mode is the default. Agents can add jobs with `re-launch enqueue REQUEST.json`; adding a queued job does not approve it to start. Open the [dashboard](http://100.91.196.107:8787), keep **Launch mode: Manual**, and click **Launch** beside the job you want to start. Approval applies to that job only and survives controller restarts. Usage freshness, limits, forecasts, scheduling pause and concurrency checks still apply; an approved job can wait for capacity. Its row shows why it is waiting.
+Manual mode is the default. Agents can add jobs with `re-launch enqueue REQUEST.json`; adding a queued job does not approve it to start. Open the [dashboard](http://100.91.196.107:8787), keep **Launch mode: Manual**, and click **Launch** beside the job you want to start. Approval applies to that job only and survives controller restarts. Usage freshness, limits, forecasts, scheduling pause and concurrency checks still apply; an approved job can wait for capacity. Its row shows why it is waiting. After a click, it shows Launch requested, file/prompt preparation, workspace registration and T3 startup in sequence. The watcher may need a few minutes to handle a saved launch request. Retry launch only notifies the watcher again; it does not create another worker.
 
 The dashboard mode selector switches between manual and automatic scheduling. Equivalent terminal commands are:
 

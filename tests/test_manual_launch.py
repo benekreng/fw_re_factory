@@ -101,4 +101,39 @@ class ManualCase(unittest.TestCase):
         finally:server.shutdown();server.server_close();thread.join()
 
 
+    def test_dashboard_distinguishes_requested_launch_from_eligibility(self):
+        self.manual();job=self.enqueue();self.quota(1)
+        self.assertIsNone(engine.dashboard(self.s)['jobs'][0]['launchProgress'])
+        engine.request_launch(self.s,job['id'])
+        pending=engine.dashboard(self.s)['jobs'][0]
+        self.assertEqual(pending['state'],'queued')
+        self.assertEqual(pending['launchProgress']['phase'],'requested')
+        self.assertIn('Waiting for an available watcher turn',pending['launchProgress']['message'])
+        self.assertNotIn('Start one approved job',pending['launchProgress']['message'])
+        with self.s.connect() as c:
+            c.execute('UPDATE launch_approvals SET notified=requested WHERE job=?',(job['id'],))
+        sent=engine.dashboard(self.s)['jobs'][0]
+        self.assertIn('watcher notified',sent['launchProgress']['message'])
+        self.quota(100)
+        held=engine.dashboard(self.s)['jobs'][0]
+        self.assertIn('Launch requested.',held['launchProgress']['message'])
+        self.assertIn('at its limit',held['launchProgress']['message'])
+
+    def test_dashboard_tracks_preparation_and_handoff_without_claiming_re_progress(self):
+        job=self.enqueue()
+        for state,project,message in [('preparing',None,'Preparing firmware files'),
+                                      ('prepared',None,'registering the workspace'),
+                                      ('prepared','project','Workspace registered'),
+                                      ('launching','project','Waiting for its launch result')]:
+            self.s.patch(job['id'],state=state,project_id=project)
+            view=engine.dashboard(self.s)['jobs'][0]
+            self.assertIn(message,view['launchProgress']['message'])
+            self.assertIsNone(view['observation'])
+        self.s.patch(job['id'],state='running',thread_id='worker',observation={'launchedAt':'2026-10-25T16:14:18+00:00'})
+        started=engine.dashboard(self.s)['jobs'][0]
+        self.assertIn('Worker started',started['launchProgress']['message'])
+        self.s.patch(job['id'],observation={'observedAt':'2026-10-25T16:15:00+00:00','stage':'Stage 0'})
+        self.assertIsNone(engine.dashboard(self.s)['jobs'][0]['launchProgress'])
+
+
 if __name__=='__main__':unittest.main()

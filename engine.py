@@ -561,6 +561,30 @@ def plan(s):
             'rotation':'unverified; no account mutations','vouchers':'recommendations only; no redemption','recommendations':recommendations,'checkpointRequests':pause_requests}
 
 
+
+def launch_progress(job, decision=None):
+    """Operator-facing handoff progress, distinct from eligibility and worker RE stages."""
+    state = job['state'];approval = job.get('launchApproval')
+    if state == 'queued' and approval:
+        if decision and not decision['admit']:
+            message = 'Launch requested. ' + decision['reason']
+        elif approval.get('notified'):
+            message = 'Launch requested; watcher notified. Waiting for the watcher to prepare and start this worker.'
+        else:
+            message = 'Launch requested. Waiting for an available watcher turn to prepare and start this worker.'
+        return {'phase': 'requested', 'message': message, 'updatedAt': approval['requested']}
+    messages = {'preparing': 'Preparing firmware files and the worker prompt.',
+                'prepared': ('Workspace registered; preparing to start the worker.' if job.get('project_id')
+                             else 'Firmware files and prompt prepared; registering the workspace.'),
+                'launching': 'Starting the T3 worker. Waiting for its launch result; another worker will not be created by retrying.'}
+    if state in messages:
+        return {'phase': state, 'message': messages[state], 'updatedAt': job['updated']}
+    observation = job.get('observation') or {}
+    if state == 'running' and observation.get('launchedAt') and not observation.get('observedAt'):
+        return {'phase': 'running', 'message': 'Worker started; waiting for its first progress check.', 'updatedAt': observation['launchedAt']}
+    return None
+
+
 def dashboard(s):
     import recovery
     from host_usage import host_usage
@@ -571,14 +595,17 @@ def dashboard(s):
     import worker_control
     import manual_replacement
     replacements={r['job']:r for r in manual_replacement.pending(s)}
+    admission=plan(s)
+    decisions={d['jobId']:d for d in admission['decisions']}
     for job in jobs:
         job['launchApproval']=launch_approval(s,job)
+        job['launchProgress']=launch_progress(job,decisions.get(job['id']))
         job['workerControl']=worker_control.get(s,job['id'])
         job['replacementControl']=replacements.get(job['id'])
         job['replaceAvailable']=bool(job.get('thread_id') and job.get('project_id') and (job['state'] in worker_control.STOPPABLE | {'stop_requested','stopped'} or job['id'] in replacements))
         job['stopAvailable']=bool(job.get('thread_id') and job['state'] in worker_control.STOPPABLE)
     policy_state=recovery.policy_snapshot(s)
-    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=plan(s),usage=latest(s,'quota'),hostUsage=host_usage.sample(),
+    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=admission,usage=latest(s,'quota'),hostUsage=host_usage.sample(),
                 recoveries=recovery.records(s),recoveryPolicy=policy_state['policy'],
                 recoveryPolicyRevision=policy_state['revision'],recoveryPolicyNotification=policy_state['notification'],
                 forecasts=forecast(s),history=rows,tokens=latest(s,'tokens'),events=events,

@@ -14,7 +14,7 @@ let state=null;
 let submitting=false;
 function launchControl(j){
  if(!['queued','preparing','prepared'].includes(j.state))return '';
- return `<button type="button" data-launch="${esc(j.id)}" ${submitting?'disabled':''}>${j.launchApproval?'Retry launch':'Launch'}</button>`;
+ return `<button type="button" data-launch="${esc(j.id)}" title="${j.launchApproval?'The launch request is already saved. Retry notifies the watcher again; it cannot create a duplicate worker.':'Request this worker to launch when usage and capacity allow.'}" ${submitting?'disabled':''}>${j.launchApproval?'Retry launch':'Launch'}</button>`;
 }
 function workerControl(j){
  let buttons='';
@@ -50,7 +50,7 @@ async function operatorAction(path,payload){
   }else if(result.control){
    const notice=result.control.notification;
    $('action-status').textContent=result.control.phase==='resumed'?'Resume requested. The watcher will use the same thread when admission checks pass.':result.job.state==='stopped'?'Worker is stopped. The watcher will leave it stopped until Resume or Replace thread.':'Stop requested; automatic restart is blocked. '+(notice?.state==='sent'?'Watcher notified; waiting for T3 interruption.':notice?.error||'Waiting to notify the watcher.');
-  }else $('action-status').textContent=result.approval?(result.notification?.sent?'Launch requested; watcher notified.':'Launch saved. '+(result.notification?.reason||'Waiting for the watcher.')):'Launch mode: '+result.launchMode+'.';
+  }else $('action-status').textContent=result.approval?(result.notification?.sent?'Launch requested. Watcher notified; preparation and startup can take a few minutes.':result.notification?.reason==='watcher is already working'?'Launch requested. The watcher is already working; your saved request waits for an available turn.':'Launch requested. '+(result.notification?.reason||'Waiting for the watcher.')):'Launch mode: '+result.launchMode+'.';
  }catch(e){$('action-status').textContent=e.message;}
  finally{submitting=false;renderJobs();$('launch-mode').value=state.plan.launchMode;$('launch-mode').disabled=false;}
 }
@@ -61,10 +61,10 @@ function renderJobs(){
  const jobs=state.jobs.filter(j=>filter==='all'||(filter==='active'?active.has(j.state):filter==='attention'?['attention','incomplete','review_pending'].includes(j.state):j.state===filter));
  const rows=jobs.map(j=>{
   const decision=state.plan.decisions.find(d=>d.jobId===j.id);
-  const progress=controlProgress(j,decision)||(j.state==='queued'&&decision?.reason)||j.observation?.stage||j.observation?.summary||j.error||'Waiting for the watcher';
+  const progress=controlProgress(j,decision)||j.launchProgress?.message||(j.state==='queued'&&decision?.reason)||j.observation?.stage||j.observation?.summary||j.error||'Waiting for the watcher';
   const preview=progress.length>220?progress.slice(0,217)+'…':progress;
   const browser=j.observation?.browserVerified?`<a href="http://127.0.0.1:${Number(j.port)}" target="_blank" rel="noreferrer">Browser :${Number(j.port)}</a>`:'';
-  return `<tr><td class="device">${j.thread_id?thread(j.thread_id,j.name):`<strong>${esc(j.name)}</strong>`}</td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':'')}</td><td class="profile">${esc(j.request.selection.model)}${j.modelEditable?` <button type="button" data-edit-model="${esc(j.id)}">Edit</button>`:''}<small>${esc(workerSettings(j))}</small></td><td class="progress"><span title="${esc(progress)}">${esc(preview)}</span><small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td class="actions">${launchControl(j)}${workerControl(j)}${browser}</td></tr>`;
+  return `<tr><td class="device">${j.thread_id?thread(j.thread_id,j.name):`<strong>${esc(j.name)}</strong>`}</td><td>${pill(j.state==='queued'&&j.launchApproval?'launch requested':j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':'')}</td><td class="profile">${esc(j.request.selection.model)}${j.modelEditable?` <button type="button" data-edit-model="${esc(j.id)}">Edit</button>`:''}<small>${esc(workerSettings(j))}</small></td><td class="progress"><span title="${esc(progress)}">${esc(preview)}</span><small>${esc(time(j.launchProgress?.updatedAt||j.observation?.observedAt||j.updated))}</small></td><td class="actions">${launchControl(j)}${workerControl(j)}${browser}</td></tr>`;
  });
  $('jobs').innerHTML=jobs.length?`<div class="table-wrap"><table class="jobs-table"><thead><tr><th>Device</th><th>Status</th><th>Worker</th><th>Progress</th><th>Actions</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:empty(state.jobs.length?'No matching jobs.':'No jobs queued.',state.jobs.length?'Choose another filter.':'Add firmware with re-launch.');
 }
