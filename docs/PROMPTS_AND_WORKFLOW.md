@@ -10,7 +10,7 @@ This factory depends on [benekreng/bens_skills](https://github.com/benekreng/ben
 - **Python controller (`engine.py`, `controller.py`, `recovery.py`):** persists the queue and observations, samples usage, estimates depletion, checks admission and ownership, prepares prompts, records checks, and sends watcher wake messages. The daemon runs without an agent conversation being active.
 - **Watcher agent:** reads the controller's instructions and saved state, uses T3 to launch workers, examines their actual output, resumes unfinished work and independently audits completion. The agent performs the source and behavior review; Python enforces the recorded state transitions and checks.
 - **Worker agents:** carry out the firmware-rewrite task in their own device directories using their saved model/settings and subagent policy.
-- **Dashboard:** displays controller state, provides a manual/automatic mode selector, and lets the operator approve individual queued jobs or prepared replacements with Launch. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
+- **Dashboard:** displays controller state, provides a manual/automatic mode selector, and lets the operator approve individual queued jobs with Launch. It also edits the independent recovery policy and immediately posts saved updates to the watcher. A compact host line shows aggregate CPU and RAM usage. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
 
 The database is the persistent record. The watcher can be replaced without recreating the queue or losing usage and review history.
 
@@ -325,7 +325,7 @@ These controls have separate effects:
 - `re-launch config schedulingPaused true` holds admission for launches/resumes while monitoring continues.
 - `re-launch recovery disable` prevents new automatic recovery starts. It does not resume notifications or stop normal workers.
 
-Changing a policy does not silently resume watcher messages. When the user chooses to resume automatic messages, the corresponding command is `re-launch config watcherMessagesPaused false`. This guide does not change any setting.
+Saving recovery rules in the dashboard posts a dedicated update immediately, even to a busy watcher or while periodic messages are paused. It does not resume periodic watcher messages or change the queue launch mode. When the user chooses to resume automatic messages, the corresponding command is `re-launch config watcherMessagesPaused false`. This guide does not change any setting.
 
 ## Where each part comes from
 
@@ -339,6 +339,6 @@ Changing a policy does not silently resume watcher messages. When the user choos
 - Persistent recovery: [recovery.py](../recovery.py), [THREAD_RECOVERY.md](THREAD_RECOVERY.md) and [RECOVERY_MESSAGE.txt](RECOVERY_MESSAGE.txt).
 - Database: `data/launcher.sqlite`; private configuration and recovery policy: `data/config.json` and `data/recovery-policy.json`.
 
-Launch approval is persisted separately from queue submission. Normal monitoring/resumes of existing workers continue according to the watcher pause settings; each fresh replacement in manual mode needs an approval matching its recovery incident. See the [README launch-mode section](../README.md#choose-manual-or-automatic-launches) for controls and the CLI equivalent.
+Launch approval is persisted separately from queue submission. Normal monitoring/resumes of existing workers continue according to the watcher pause settings; recovery replacements are authorized by their enabled policy in both manual and automatic queue modes, without another Launch click. See the [README launch-mode section](../README.md#choose-manual-or-automatic-launches) for controls and the CLI equivalent.
 
 The guide reuses and explains these components. It does not replace their live instructions, embed the full skill, or recreate the old Night Watch timer.

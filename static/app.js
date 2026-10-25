@@ -13,7 +13,7 @@ const active=new Set(['preparing','prepared','launching','running','usage_limite
 let state=null;
 let submitting=false;
 function launchControl(j){
- if(!['queued','preparing','prepared','replacement_ready'].includes(j.state))return '';
+ if(!['queued','preparing','prepared'].includes(j.state))return '';
  return `<button type="button" data-launch="${esc(j.id)}" ${submitting?'disabled':''}>${j.launchApproval?'Retry launch':'Launch'}</button>`;
 }
 function workerSettings(j){
@@ -91,6 +91,99 @@ function renderTokens(){
  const t=state.tokens;
  $('tokens').innerHTML=t?['claude','codex'].map(p=>{const v=t[p];const n=v?.report?.totals;return `<div class="token-row"><h3>${esc(p==='claude'?'Claude':'Codex')}</h3>${v?.ok&&n?`<div class="token-number">${fmt.format(n.totalTokens??0)} <span class="muted small">reported tokens</span></div>${kv('Input / output',esc(fmt.format(n.inputTokens??0))+' / '+esc(fmt.format(n.outputTokens??0)))}${kv('Cache read / write',esc(fmt.format(n.cacheReadTokens??0))+' / '+esc(fmt.format(n.cacheCreationTokens??0)))}<p class="muted small">${v.report.sessions?.length??0} local sessions · cumulative report, not a sum of polls</p>`:empty('Unknown',v?.error||'No local token report')}</div>`;}).join('')+`<p class="note">Sample ${esc(time(t.time))}. Cache fields follow each CLI’s definitions. Local logs can be incomplete; tokens do not represent remaining subscription quota.</p>`:empty('No local token report yet','ccusage reads available Claude and Codex session logs.');
 }
+let recoveryDirty=false;
+let recoveryRevision=null;
+let recoverySaving=false;
+let ruleNumber=0;
+
+function notificationText(notice){
+ if(!notice)return 'No watcher update has been sent for these rules.';
+ if(notice.state==='sent')return 'Rules saved. Update sent to the watcher '+time(notice.sentAt)+'. It queues if the watcher is busy.';
+ if(notice.state==='pending')return 'Rules saved. '+(notice.error||'Waiting to notify the watcher.');
+ if(notice.state==='sending')return 'Rules saved. Notification delivery is not yet confirmed.';
+ if(notice.state==='uncertain')return 'Rules saved. '+(notice.error||'Notification delivery could not be confirmed.');
+ return 'Rules saved.';
+}
+function setRepairFields(row){
+ const repair=row.querySelector('[data-field=action]').value==='repair_then_replace';
+ row.querySelector('.repair-fields').hidden=!repair;
+ row.querySelectorAll('.repair-fields input, .repair-fields textarea').forEach(e=>e.disabled=!repair);
+}
+function appendRecoveryRule(rule={}){
+ let id=rule.id;
+ if(!id){do{id='rule-'+(++ruleNumber);}while([...$('recovery-rules').querySelectorAll('[data-field=id]')].some(e=>e.value===id));}
+ const row=document.createElement('fieldset');row.className='rule-editor';row.dataset.rule='';
+ row.innerHTML=`<div class="rule-heading"><label>Rule ID <input data-field="id" value="${esc(id)}" pattern="[a-z0-9]([a-z0-9_]|-){0,63}" maxlength="64" required></label><button type="button" data-remove-rule>Remove rule</button></div>
+ <label>When should this count as a broken thread?<textarea data-field="when" required>${esc(rule.when||'')}</textarea></label>
+ <label>Action <select data-field="action"><option value="replace">Replace thread</option><option value="repair_then_replace">Repair, then replace if unsuccessful</option></select></label>
+ <div class="repair-fields">
+  <label>Repair steps (one per line)<textarea data-field="repairSteps" required>${esc((rule.repairSteps||[]).join('\n'))}</textarea></label>
+  <label>How to verify the repair worked<textarea data-field="verify" required>${esc(rule.verify||'')}</textarea></label>
+  <label>Maximum repair attempts <input data-field="maxRepairAttempts" type="number" min="1" max="5" value="${Number(rule.maxRepairAttempts)||1}" required></label>
+ </div>`;
+ row.querySelector('[data-field=action]').value=rule.action||'replace';
+ $('recovery-rules').append(row);setRepairFields(row);
+}
+function loadRecoveryEditor(snapshot){
+ const policy=snapshot.policy;
+ $('recovery-enabled').checked=policy.enabled;
+ $('recovery-max').value=policy.maxReplacementsPerJob;
+ $('recovery-cooldown').value=policy.cooldownSeconds;
+ $('recovery-rules').replaceChildren();ruleNumber=0;
+ for(const rule of policy.rules)appendRecoveryRule(rule);
+ recoveryRevision=snapshot.revision;recoveryDirty=false;
+ $('recovery-fields').disabled=false;
+ $('recovery-save-status').textContent=notificationText(snapshot.notification);
+ $('retry-policy-notification').hidden=!['pending','sending','uncertain'].includes(snapshot.notification?.state);
+}
+function renderRecoveryEditor(){
+ if(!state.recoveryPolicyRevision)return;
+ const snapshot={policy:state.recoveryPolicy,revision:state.recoveryPolicyRevision,notification:state.recoveryPolicyNotification};
+ if(!recoveryDirty&&!recoverySaving){
+  if(recoveryRevision!==snapshot.revision)loadRecoveryEditor(snapshot);
+  else{
+   $('recovery-save-status').textContent=notificationText(snapshot.notification);
+   $('retry-policy-notification').hidden=!['pending','sending','uncertain'].includes(snapshot.notification?.state);
+  }
+ }else if(recoveryDirty&&recoveryRevision!==snapshot.revision){
+  $('recovery-save-status').textContent='Saved rules changed elsewhere. Your draft is retained; reload the saved rules before saving.';
+ }
+}
+function dirtyRecoveryEditor(){
+ recoveryDirty=true;$('recovery-save-status').textContent='Unsaved changes.';
+ $('retry-policy-notification').hidden=true;
+}
+function recoveryDraft(){
+ return {enabled:$('recovery-enabled').checked,maxReplacementsPerJob:Number($('recovery-max').value),cooldownSeconds:Number($('recovery-cooldown').value),rules:[...$('recovery-rules').querySelectorAll('[data-rule]')].map(row=>{
+  const field=name=>row.querySelector(`[data-field=${name}]`).value;
+  const repair=field('action')==='repair_then_replace';
+  return {id:field('id').trim(),when:field('when').trim(),action:field('action'),repairSteps:repair?field('repairSteps').split('\n').map(s=>s.trim()).filter(Boolean):[],verify:repair?field('verify').trim():'',maxRepairAttempts:repair?Number(field('maxRepairAttempts')):0};
+ })};
+}
+async function saveRecoveryPolicy(retry=false){
+ if(recoverySaving||!state?.recoveryPolicyRevision)return;
+ if(retry&&recoveryDirty){$('recovery-save-status').textContent='Save your draft before notifying the watcher.';return;}
+ recoverySaving=true;$('recovery-fields').disabled=true;
+ $('recovery-save-status').textContent=retry?'Notifying watcher…':'Saving rules and notifying watcher…';
+ try{
+  const payload={expectedRevision:recoveryRevision};
+  if(!retry)payload.policy=recoveryDraft();
+  const response=await fetch(retry?'/api/recovery-policy/notify':'/api/recovery-policy',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:JSON.stringify(payload)});
+  const result=await response.json();if(!response.ok)throw new Error(result.error||'Policy update failed.');
+  state.recoveryPolicy=result.policy;state.recoveryPolicyRevision=result.revision;state.recoveryPolicyNotification=result.notification;
+  loadRecoveryEditor(result);$('recovery-state').textContent=result.policy.enabled?'enabled':'disabled';
+ }catch(error){$('recovery-save-status').textContent=error.message+' Your draft has been retained.';}
+ finally{recoverySaving=false;$('recovery-fields').disabled=false;}
+}
+function renderHostUsage(){
+ const host=state.hostUsage;
+ if(!host){$('host-usage').textContent='Factory host: CPU and RAM readings unavailable.';return;}
+ const cpu=host.cpuPercent==null?((host.errors||[]).some(e=>e.includes('CPU'))?'unavailable':'measuring'):fmt.format(host.cpuPercent)+'%';
+ const ram=host.memoryUsedBytes==null?'unavailable':fmt.format(host.memoryUsedBytes/1073741824)+' / '+fmt.format(host.memoryTotalBytes/1073741824)+' GiB ('+fmt.format(host.memoryPercent)+'%)';
+ $('host-usage').textContent='Factory host · CPU '+cpu+' · RAM '+ram;
+ $('host-usage').title=(host.errors||[]).join(' ')||(host.cpuCount+' logical CPUs. CPU is averaged between samples; RAM excludes available cache.');
+}
+
 function render(data){
  state=data;$('launch-mode').value=data.plan.launchMode;$('launch-mode-note').textContent=data.plan.launchMode==='manual'?'Click Launch to approve each new worker.':'Queued jobs start when usage and capacity allow.';$('error').hidden=true;$('sync').textContent='Updated '+new Date(data.time).toLocaleTimeString();
  const stats=[['active',data.jobs.filter(j=>active.has(j.state)).length],['queued',data.plan.queued],['completed',data.jobs.filter(j=>j.state==='verified_complete').length],['need attention',data.jobs.filter(j=>['attention','incomplete','usage_limited'].includes(j.state)).length]];
@@ -101,15 +194,23 @@ function render(data){
  const next=data.plan.decisions.find(d=>d.admit)||data.plan.decisions[0];
  $('admission').innerHTML=next?`<p>${esc(next.name)} ${pill(next.admit?'eligible to start':'hold',next.admit?'':'warn')}</p><p class="muted">${esc(next.reason)}</p>`:empty('No pending launch decisions','Add firmware groups with re-launch.');
  $('admission').innerHTML+=`<p class="note">Usage ${data.plan.quotaFresh?'fresh':'missing or stale'}. Maximum ${Number(data.plan.maxParallel)} concurrent workers.</p>`;
- renderJobs();renderAccounts();renderChart();renderTokens();
- $('recovery-state').textContent=data.recoveryPolicy?.enabled?'policy enabled':'disabled';
+ renderJobs();renderAccounts();renderChart();renderTokens();renderHostUsage();renderRecoveryEditor();
+ $('recovery-state').textContent=data.recoveryPolicy?.enabled?'enabled':'disabled';
  $('recoveries').innerHTML=data.recoveries?.length?data.recoveries.slice(0,12).map(r=>`<div class="review"><strong>${esc(data.jobs.find(j=>j.id===r.job)?.name||r.job)}</strong> ${pill(r.phase,['attention','launching'].includes(r.phase)?'warn':'neutral')}<p>Rule: ${esc(r.rule_id)} · repair attempts: ${Number(r.repair_attempts)} · ${esc(time(r.updated))}</p>${r.error?`<p class="warn-text">${esc(r.error)}</p>`:''}</div>`).join(''):empty('No thread recovery incidents',data.recoveryPolicy?.enabled?'The watcher uses your saved criteria and bounded repair procedure.':'Waiting for your broken-thread criteria and repair instructions.');
  const reviews=data.jobs.filter(j=>j.review||j.state==='review_pending');$('reviews').innerHTML=reviews.length?reviews.map(j=>`<div class="review"><strong>${esc(j.name)}</strong> ${pill(j.review?.verdict||'review pending')}<p>${esc(j.review?.summary||'Independent audit pending.')}</p>${(j.review?.findings||[]).map(f=>`<p class="warn-text">${esc(typeof f==='object'?JSON.stringify(f):f)}</p>`).join('')}<p>${j.review?.commit?'Commit '+esc(j.review.commit.slice(0,12)):''} ${thread(j.thread_id)}</p></div>`).join(''):empty('No completion claims yet','Completed workers need source, evidence, checks and browser verification before acceptance.');
  const openedEvents=new Set([...document.querySelectorAll('#events details[open]')].map(e=>e.dataset.event));
  $('events').innerHTML=data.events.length?data.events.slice(0,35).map(e=>`<details class="event" data-event="${esc(e.id)}" ${openedEvents.has(String(e.id))?'open':''}><summary><time>${esc(time(e.time))}</time><span>${esc(label(e.kind))}</span></summary><pre>${esc(e.detail)}</pre></details>`).join(''):empty('No activity yet.');
 
 }
-async function refresh(){try{const r=await fetch('/api/status');if(!r.ok)throw new Error('Dashboard request failed: HTTP '+r.status);render(await r.json());}catch(e){$('error').hidden=false;$('error').textContent=e.message+' Displayed data may be stale.';$('sync').textContent='Connection lost';}}
+async function refresh(){try{const r=await fetch('/api/status');if(!r.ok)throw new Error('Dashboard request failed: HTTP '+r.status);render(await r.json());return true;}catch(e){$('error').hidden=false;$('error').textContent=e.message+' Displayed data may be stale.';$('sync').textContent='Connection lost';return false;}}
 $('jobs').addEventListener('click',e=>{const button=e.target.closest('[data-launch]');if(button)operatorAction('/api/jobs/'+button.dataset.launch+'/launch',{});});
 $('launch-mode').addEventListener('change',e=>operatorAction('/api/launch-mode',{mode:e.target.value}));
 $('filter').addEventListener('change',renderJobs);$('window-filter').addEventListener('change',()=>state&&renderChart());refresh();setInterval(refresh,15000);
+
+$('recovery-form').addEventListener('submit',e=>{e.preventDefault();saveRecoveryPolicy();});
+$('recovery-form').addEventListener('input',dirtyRecoveryEditor);
+$('recovery-form').addEventListener('change',e=>{if(e.target.matches('[data-field=action]'))setRepairFields(e.target.closest('[data-rule]'));dirtyRecoveryEditor();});
+$('add-recovery-rule').addEventListener('click',()=>{appendRecoveryRule();dirtyRecoveryEditor();});
+$('recovery-rules').addEventListener('click',e=>{if(e.target.closest('[data-remove-rule]')){e.target.closest('[data-rule]').remove();dirtyRecoveryEditor();}});
+$('reload-recovery-policy').addEventListener('click',async()=>{if(await refresh())loadRecoveryEditor({policy:state.recoveryPolicy,revision:state.recoveryPolicyRevision,notification:state.recoveryPolicyNotification});});
+$('retry-policy-notification').addEventListener('click',()=>saveRecoveryPolicy(true));

@@ -119,3 +119,23 @@ footer { padding: 20px 0 4px; color: var(--muted); }
   #sample-time { flex-basis: 100%; }
   .event summary { flex-wrap: wrap; gap: 2px 12px; }
 }
+.host-usage { margin: -18px 0 28px; font-size: 13px; }
+#recovery-fields { margin: 16px 0 0; padding: 0; border: 0; min-width: 0; }
+.policy-options, .policy-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; }
+.policy-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.policy-options input[type=number] { width: 85px; }
+input, textarea { background: var(--control); color: var(--ink); border: 1px solid var(--edge); border-radius: 4px; padding: 6px 8px; font: inherit; }
+textarea { display: block; width: 100%; margin-top: 5px; min-height: 76px; resize: vertical; }
+.rule-editor { margin: 18px 0; padding: 14px; border: 1px solid var(--edge); min-width: 0; }
+.rule-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.rule-editor label { display: block; font-size: 13px; margin: 12px 0; }
+.rule-heading label { margin: 0; }
+.rule-heading input { max-width: 200px; margin-left: 8px; }
+.rule-editor select { margin-left: 8px; }
+.rule-editor input[type=number] { width: 65px; margin-left: 8px; }
+#recovery-save-status { margin: 12px 0; }
+@media (max-width: 650px) {
+  .policy-options { align-items: flex-start; flex-direction: column; }
+  .rule-editor { padding: 10px; }
+  .rule-editor select { display: block; margin: 6px 0 0; max-width: 100%; }
+}

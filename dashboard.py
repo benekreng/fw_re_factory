@@ -6,6 +6,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import engine
+import recovery
 from app import Problem
 
 
@@ -38,18 +39,26 @@ def make_server(store, port=8787, host='127.0.0.1'):
         def do_POST(self):
             path=urlparse(self.path).path
             match=re.fullmatch(r'/api/jobs/([a-zA-Z0-9_-]{1,64})/launch',path)
-            if path!='/api/launch-mode' and not match:
+            if path not in ('/api/launch-mode','/api/recovery-policy','/api/recovery-policy/notify') and not match:
                 self.respond({'error':'Unsupported dashboard action'},code=405);return
             if not self.valid_host() or self.headers.get('Origin')!='http://'+self.headers.get('Host','') or not hmac.compare_digest(self.headers.get('X-CSRF-Token','').encode(),csrf_token.encode()):
                 self.respond({'error':'Use the launch controls from this dashboard page.'},code=403);return
             try:
                 length=int(self.headers.get('Content-Length','0'))
-                if not 0<length<=4096 or self.headers.get('Content-Type','').split(';')[0]!='application/json':
+                maximum=262144 if path=='/api/recovery-policy' else 4096
+                if not 0<length<=maximum or self.headers.get('Content-Type','').split(';')[0]!='application/json':
                     raise Problem('Send a small JSON object.')
                 payload=json.loads(self.rfile.read(length))
                 if not isinstance(payload,dict):raise Problem('Expected a JSON object.')
                 if match:
                     result={'approval':engine.request_launch(store,match[1]),'notification':engine.notify_launch(store)}
+                elif path=='/api/recovery-policy':
+                    result=recovery.update_dashboard_policy(store,payload.get('policy'),payload.get('expectedRevision'))
+                elif path=='/api/recovery-policy/notify':
+                    revision=payload.get('expectedRevision')
+                    if not isinstance(revision,str):raise Problem('A saved policy revision is required.')
+                    recovery.notify_policy_update(store,retry_revision=revision)
+                    result=recovery.policy_snapshot(store)
                 else:result=engine.set_launch_mode(store,payload.get('mode'))
                 self.respond(result)
             except Problem as error:self.respond({'error':str(error)},code=error.status)

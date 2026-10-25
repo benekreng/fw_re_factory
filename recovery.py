@@ -55,6 +55,84 @@ def set_policy(s, value):
     return value
 
 
+def policy_revision(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def policy_notification(s):
+    with s.connect() as c:
+        row=c.execute("SELECT value FROM metadata WHERE key='recovery_policy_notification'").fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _save_notification(s, value):
+    with s.connect() as c:
+        c.execute("INSERT OR REPLACE INTO metadata VALUES ('recovery_policy_notification',?)",(json.dumps(value),))
+    return value
+
+
+def policy_snapshot(s):
+    value=policy(s);revision=policy_revision(value);notice=policy_notification(s)
+    return {'policy':value,'revision':revision,
+            'notification':notice if notice and notice['revision']==revision else None}
+
+
+def update_dashboard_policy(s, value, expected_revision):
+    """Save the operator's draft without overwriting a newer policy from another editor."""
+    if not isinstance(value,dict):raise Problem('Recovery policy must be an object.')
+    value=validate_policy({**value,'source':'Dashboard'})
+    if not isinstance(expected_revision,str) or not re.fullmatch('[a-f0-9]{64}',expected_revision):
+        raise Problem('Reload the saved recovery rules before editing.')
+    with engine.lock(s):
+        current=policy(s)
+        if current!=value:
+            if policy_revision(current)!=expected_revision:
+                raise Problem('Recovery rules changed elsewhere. Your draft is retained; reload the saved rules before saving.',409)
+            set_policy(s,value)
+            _save_notification(s,{'id':uuid.uuid4().hex,'revision':policy_revision(value),'state':'pending','requestedAt':now()})
+        elif not policy_notification(s) or policy_notification(s)['revision']!=policy_revision(value):
+            _save_notification(s,{'id':uuid.uuid4().hex,'revision':policy_revision(value),'state':'pending','requestedAt':now()})
+    notify_policy_update(s)
+    return policy_snapshot(s)
+
+
+def notify_policy_update(s, *, retry_revision=None):
+    """Post operator policy edits immediately, even to a busy or paused watcher.
+
+    Delivery intent is durable before the non-idempotent CLI call. A timeout or
+    interrupted send is not retried automatically; an operator can explicitly retry.
+    """
+    with engine.lock(s):
+        value=policy(s);revision=policy_revision(value);notice=policy_notification(s)
+        if retry_revision is not None:
+            if retry_revision!=revision:raise Problem('Recovery rules changed; reload before notifying the watcher.',409)
+            notice=_save_notification(s,{'id':uuid.uuid4().hex,'revision':revision,'state':'pending','requestedAt':now()})
+        if not notice:return None
+        if notice['revision']!=revision:
+            return _save_notification(s,{**notice,'state':'superseded'})
+        if notice['state']!='pending':return notice
+        owner=engine.owner(s)
+        if not owner['thread'] or owner['phase']!='ready':
+            return _save_notification(s,{**notice,'error':'No ready watcher. Rules are saved; notification will wait for one.'})
+        notice=_save_notification(s,{**notice,'state':'sending','thread':owner['thread'],'epoch':owner['epoch'],'attemptedAt':now(),'error':None})
+        message=(f'Recovery policy updated by the user in the dashboard. Revision={revision}. '
+                 f'Ownership: thread={owner["thread"]} epoch={owner["epoch"]}. '
+                 f'Read {s.root}/CONTROLLER.md and the current recovery policy now. '
+                 'Apply the latest saved rules, independently of manual/automatic queue launch mode. '
+                 'Reassess open incidents before further actions under a changed policy. '
+                 'Keep queue launch mode and periodic watcher pause settings unchanged. '
+                 'Do not send old conversation or recovery diagnostics to a replacement worker.\n\n'
+                 'Saved policy:\n'+json.dumps(value,indent=2))
+        try:
+            s.cli('thread','send',owner['thread'],'-','--json',input=message)
+        except Exception as error:
+            notice=_save_notification(s,{**notice,'state':'uncertain','error':'Delivery not confirmed: '+str(error)[:600]})
+        else:
+            notice=_save_notification(s,{**notice,'state':'sent','sentAt':now()})
+        engine.event(s,'recovery_policy_notification',{'revision':revision,'state':notice['state'],'thread':owner['thread']})
+        return notice
+
+
 def _decode(row):
     result=dict(row)
     for key in ('policy','result'):

@@ -60,11 +60,11 @@ re-launch config launchMode automatic
 re-launch launch DEVICE_OR_JOB_ID  # explicit approval for one job
 ```
 
-An agent submitting jobs should preserve the mode and must not use `launch` or change to automatic without your explicit instruction. Existing workers still receive normal monitoring, continuation and usage-limit resumes. Creating a fresh replacement thread requires a new per-incident approval in manual mode; an earlier worker's approval does not authorize it.
+An agent submitting jobs should preserve the mode and must not use `launch` or change to automatic without your explicit instruction. Existing workers still receive normal monitoring, continuation and usage-limit resumes. Recovery replacements follow the separately enabled recovery policy in both modes; they do not require a manual Launch approval. Usage, concurrency, scheduling pause and recovery limits still apply.
 
 Clicking Launch requests one watcher turn even when periodic watcher messages are paused. If the watcher is busy, that notification waits until it is idle. This does not resume periodic messages. If the one-shot turn is blocked by usage, concurrency or provider availability, the approval remains saved; use **Retry launch** to request another turn while periodic messages remain paused. A lost delivery acknowledgment is retained as uncertain rather than automatically resending. The dashboard requires the registered watcher; if none is ready, create/adopt it using the watcher commands first.
 
-Dashboard launch controls are available to clients permitted to reach its Tailscale listener. Mutation requests require the dashboard's same-origin page and request token. Queue submission, model/settings and firmware selection remain in the CLI.
+Dashboard launch and recovery-policy controls are available to clients permitted to reach its Tailscale listener. Mutation requests require the dashboard's same-origin page and request token. Queue submission, model/settings and firmware selection remain in the CLI.
 
 ### Choose worker subagents
 
@@ -107,7 +107,7 @@ re-launch config policy weekly-first
 re-launch config wakeSeconds 240
 ```
 
-Dashboard: http://100.91.196.107:8787 over this machine's Tailscale adapter. It refreshes every 15 seconds and is reachable from devices on the tailnet permitted by its access rules. The user service binds specifically to that Tailscale IPv4 address. Manual dashboard runs default to loopback; use `re-launch dashboard --host 100.91.196.107` for the Tailscale listener. No remote assets are needed.
+Dashboard: http://100.91.196.107:8787 over this machine's Tailscale adapter. It refreshes every 15 seconds and is reachable from devices on the tailnet permitted by its access rules. The user service binds specifically to that Tailscale IPv4 address. Manual dashboard runs default to loopback; use `re-launch dashboard --host 100.91.196.107` for the Tailscale listener. No remote assets are needed. A compact Factory host line shows aggregate CPU utilization and RAM used/total in GiB. Readings come from the Linux environment running the factory (including its allocated memory when hosted in WSL), not individual workers or remote machines. CPU measures the change between samples; the first reading may say measuring. Missing readings remain unavailable.
 
 The wizard chooses provider, exact model settings, actual quota pool, subagent policy and cap, device names/directories, firmware/reference paths, target host, concurrency, scheduling policy, optional cooperative checkpoint pauses and wake interval. It presents the concrete request before submission. Subsequent submissions reuse the same watcher. A single supplied version is trusted latest; multiple versions, including those inside archives, require compatible-latest selection. Firmware stays local.
 
@@ -141,6 +141,14 @@ The daemon wakes an idle watcher every **240 seconds by default**, coalesces not
 Workers use the current `/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md`, with a hashed snapshot and explicit user overrides appended. A no-subagent request overrides the skill's fresh-agent integration requirement, and that exception must be documented.
 
 `CONTROLLER.md` defines ownership, launch/recovery and short-check behavior. `docs/REVIEW.md` defines independent artifact/source/behavior/browser review. A run under two hours triggers more scrutiny, never an arbitrary minimum duration. Completion requires evidence for assignment, originals, specification, exact, faithful, main and browser. The recorder requires a reviewed current commit and a successful captured check at that commit; a model's report alone does not pass the gate. This mechanical guard cannot prove semantic code quality: the watcher must actually perform the specified audit.
+
+## Edit recovery rules in the dashboard
+
+Expand **Thread recovery** in the dashboard. Set **Enable thread recovery**, replacement limits and cooldown, then add rules describing what counts as broken. Each rule can replace the thread immediately or attempt the supplied repair steps first. Repair rules require a verification procedure and a bounded attempt count. No criteria are prefilled or inferred for you.
+
+Click **Save and notify watcher**. The validated policy is saved locally and posted to the registered watcher immediately, even when it is busy or periodic messages are paused. Busy watchers queue the message. This does not change manual/automatic queue mode or resume periodic notifications. The recovery policy governs replacements independently of queue launch mode.
+
+The form retains unsaved drafts through refreshes. If another editor changes the saved policy, a stale save is rejected; **Reload saved rules** loads the latest version. Notification status distinguishes saved rules from confirmed delivery. With no ready watcher, the notification is persisted until one is available. An uncertain delivery is not retried automatically; **Retry watcher notification** explicitly resends the saved policy. Changing rules requires the watcher to reassess any open incident before starting further actions under a stale policy snapshot.
 
 ## Replace a broken worker
 

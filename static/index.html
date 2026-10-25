@@ -26,6 +26,7 @@
     <p id="action-status" role="status" aria-live="polite"></p>
   </section>
   <div id="stats" class="stats" aria-label="Run statistics"></div>
+  <p id="host-usage" class="host-usage muted" aria-label="Factory host CPU and RAM">Factory host: measuring CPU and RAM…</p>
 
   <section id="queue">
     <div class="section-heading">
@@ -80,7 +81,28 @@
     </details>
     <details id="recovery">
       <summary>Thread recovery <span id="recovery-state" class="muted">—</span></summary>
-      <div id="recoveries" class="details-content"></div>
+      <div class="details-content">
+        <p class="muted small">Recovery follows these rules in both launch modes. Saving sends an update to the watcher immediately.</p>
+        <form id="recovery-form">
+          <fieldset id="recovery-fields" disabled>
+            <div class="policy-options">
+              <label class="checkbox-label"><input id="recovery-enabled" type="checkbox"> Enable thread recovery</label>
+              <label>Replacements per job <input id="recovery-max" type="number" min="1" max="20" required></label>
+              <label>Cooldown (seconds) <input id="recovery-cooldown" type="number" min="0" max="86400" required></label>
+            </div>
+            <div id="recovery-rules"></div>
+            <div class="policy-actions">
+              <button id="add-recovery-rule" type="button">Add rule</button>
+              <button type="submit">Save and notify watcher</button>
+              <button id="reload-recovery-policy" type="button">Reload saved rules</button>
+              <button id="retry-policy-notification" type="button" hidden>Retry watcher notification</button>
+            </div>
+          </fieldset>
+        </form>
+        <p id="recovery-save-status" class="small" role="status" aria-live="polite"></p>
+        <h3>Incidents</h3>
+        <div id="recoveries"></div>
+      </div>
     </details>
     <details id="activity">
       <summary>Activity log</summary>

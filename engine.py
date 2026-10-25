@@ -470,7 +470,7 @@ def plan(s):
             families=[x for x in ('opus','sonnet','haiku') if x in scope]
             return not families or any(x in job['request']['selection']['model'].lower() for x in families)
         reason=None
-        if config.get('launchMode','manual')=='manual' and job['state'] in ('queued','replacement_ready') and not launch_approval(s,job):
+        if config.get('launchMode','manual')=='manual' and job['state']=='queued' and not launch_approval(s,job):
             reason='Manual mode: waiting for you to click Launch in the dashboard.'
         elif config.get('schedulingPaused'):reason='Scheduling is paused by the user; monitoring continues.'
         elif not fresh:reason='Usage is missing or stale; sample before admission.'
@@ -547,23 +547,28 @@ def plan(s):
 
 def dashboard(s):
     import recovery
+    from host_usage import host_usage
     with s.connect() as c:
         events=[dict(r) for r in c.execute('SELECT * FROM events ORDER BY id DESC LIMIT 100')]
         rows=[dict(r) for r in c.execute("SELECT * FROM quota WHERE time>=? ORDER BY id DESC LIMIT 5000",(dt.datetime.fromtimestamp(time.time()-86400,dt.timezone.utc).isoformat(),))][::-1]
     jobs=s.jobs()
     for job in jobs:job['launchApproval']=launch_approval(s,job)
-    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=plan(s),usage=latest(s,'quota'),
-                recoveries=recovery.records(s),recoveryPolicy=recovery.policy(s),
+    policy_state=recovery.policy_snapshot(s)
+    return dict(time=now(),watcher=owner(s),jobs=jobs,plan=plan(s),usage=latest(s,'quota'),hostUsage=host_usage.sample(),
+                recoveries=recovery.records(s),recoveryPolicy=policy_state['policy'],
+                recoveryPolicyRevision=policy_state['revision'],recoveryPolicyNotification=policy_state['notification'],
                 forecasts=forecast(s),history=rows,tokens=latest(s,'tokens'),events=events,
                 config={k:s.config().get(k) for k in ('wakeSeconds','sampleSeconds','maxParallel','policy','watcherMessagesPaused')})
 
 
 def daemon(s):
+    import recovery
     last_sample=0;last_tokens=0
     # systemd enforces singleton. This lock also protects a manually started second daemon.
     with lock(s,'daemon'):
         while True:
             try:
+                recovery.notify_policy_update(s)
                 if time.monotonic()-last_sample>=s.config().get('sampleSeconds',240):
                     sample_usage(s);last_sample=time.monotonic()
                 if time.monotonic()-last_tokens>=s.config().get('tokenSeconds',900):
