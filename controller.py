@@ -121,8 +121,24 @@ def prepare(store, identifier):
     atomic_json(artifacts/'provenance.json',dict(startPromptPath=str(prompt_file),
         startPromptSha256=sha(prompt_file),skillPath=str(skill_file),skillSha256=sha(skill_file),
         generatedPromptSha256=sha(artifacts/'START_PROMPT.txt'),preparedAt=now()))
+    atomic_json(destination/'LAUNCH_SETTINGS.json',r)
     (destination/'.gitignore').touch(exist_ok=True)
     return store.patch(identifier,state='prepared',error=None)
+
+
+def reserve_launch(store, identifier, expected_revision):
+    import engine
+    from model_editor import revision
+    job = store.job(identifier)
+    if not isinstance(expected_revision, str):
+        raise Problem('Pass the prepared job’s current modelRevision after its job ID.', 409)
+    if expected_revision != revision(job['request']):
+        raise Problem('Model settings changed. Reload the job and repeat admission/preparation before launching.', 409)
+    if job['state'] != 'prepared' or not job['project_id'] or job['thread_id']:
+        raise Problem('Only a prepared job with its project recorded can start a launch.', 409)
+    store.model_selection(job['request']['selection'])
+    engine.require_launch_approval(store, job)
+    return store.patch(identifier, state='launching')
 
 
 def record_thread(store, identifier, result):
@@ -211,7 +227,7 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--owner', required=True)
     p.add_argument('--epoch', required=True, type=int)
-    p.add_argument('action',choices=['pending','jobs','job','claim','resume','prepare','project','launching','thread','observe','review','check','catalog','attention','recovery'])
+    p.add_argument('action',choices=['pending','jobs','job','claim','resume','prepare','project','launching','thread','observe','review','check','catalog','catalog_status','attention','recovery'])
     p.add_argument('id',nargs='?')
     p.add_argument('command',nargs=argparse.REMAINDER)
     args=p.parse_args()
@@ -247,11 +263,7 @@ def main():
                 if store.job(args.id)['state']!='prepared':raise Problem('Prepare this job before registering its project.')
                 result=store.patch(args.id,project_id=payload['projectId'])
             elif args.action=='launching':
-                job=store.job(args.id)
-                if job['state']!='prepared' or not job['project_id'] or job['thread_id']:
-                    raise Problem('Only a prepared job with its project recorded can start a launch.')
-                engine.require_launch_approval(store,job)
-                result=store.patch(args.id,state='launching')
+                result=reserve_launch(store,args.id,args.command[0] if args.command else None)
             elif args.action=='thread': result=record_thread(store,args.id,json.load(sys.stdin))
             elif args.action=='observe':
                 payload=json.load(sys.stdin)
@@ -263,6 +275,9 @@ def main():
                     raise Problem('Invalid observed state.')
                 result=store.patch(args.id,state=state,observation={**(store.job(args.id).get('observation') or {}),**payload,'observedAt':now()})
             elif args.action=='review': result=record_review(store,args.id,json.load(sys.stdin))
+            elif args.action=='catalog_status':
+                from model_editor import catalog_snapshot
+                result=catalog_snapshot(store)
             elif args.action=='catalog':
                 payload=json.load(sys.stdin)
                 assert isinstance(payload.get('providers'),list)

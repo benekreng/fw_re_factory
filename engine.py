@@ -124,24 +124,32 @@ def bootstrap(s):
 def wake(s, reason='periodic check', force=False):
     with lock(s):
         requested = pending_launch_notifications(s)
-        if s.config().get('watcherMessagesPaused') and not requested:
+        from model_editor import catalog_snapshot
+        catalog = catalog_snapshot(s)
+        catalog_request = catalog['refreshRequest']
+        catalog_notify = catalog_request and not catalog_request.get('notifiedAt')
+        if s.config().get('watcherMessagesPaused') and not requested and not catalog_notify:
             return {'sent':False,'reason':'watcher messages paused by the user'}
         o=owner(s)
         if not o['thread'] or o['phase']!='ready': return {'sent':False,'reason':'no ready watcher'}
         seconds=s.config().get('wakeSeconds',240)
-        if not force and not requested and o['last_wake'] and time.time()-stamp(o['last_wake']) < seconds:
+        if not force and not requested and not catalog_notify and o['last_wake'] and time.time()-stamp(o['last_wake']) < seconds:
             return {'sent':False,'reason':'coalesced'}
         shown=unwrap(s.cli('thread','show',o['thread'],'--messages','0','--json'))
         t=shown.get('thread',shown)
         if t.get('activeRunId') or t.get('pendingRequestCount',0):
             return {'sent':False,'reason':'watcher is already working'}
         if requested:reason='user requested launch for '+', '.join(x['job'] for x in requested)
+        if catalog['refreshPending']:reason += '; refresh the live model catalog with orchestrator_capabilities and fenced catalog'
         message=(f'Firmware watch: {reason}. Read {s.root}/CONTROLLER.md. '
                  f'Ownership: thread={o["thread"]} epoch={o["epoch"]}. '
                  'Fence ownership before acting. Run the short check first; review sources only when needed.')
         # Persist delivery intent before send so timeout does not cause rapid repeated nudges.
         with s.connect() as c:
             c.execute('UPDATE watcher SET last_wake=? WHERE id=1',(now(),))
+            if catalog_notify:
+                catalog_request['notifiedAt']=now()
+                c.execute("INSERT OR REPLACE INTO metadata VALUES ('model_catalog_request',?)",(json.dumps(catalog_request),))
             for request in requested:
                 c.execute('UPDATE launch_approvals SET notified=? WHERE job=? AND target=?',
                           (now(),request['job'],request['target']))

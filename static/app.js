@@ -18,7 +18,7 @@ function launchControl(j){
 }
 function workerSettings(j){
  const options=j.request.selection.options||{};
- const settings=Object.entries(options).map(([key,value])=>key==='reasoningEffort'?label(value).replace(/^./,c=>c.toUpperCase())+' reasoning':key==='serviceTier'?(value==='default'?'Standard tier':label(value)+' tier'):label(key)+': '+value);
+ const settings=Object.entries(options).map(([key,value])=>['reasoningEffort','effort'].includes(key)?(value==='xhigh'?'Extra high':label(value)).replace(/^./,c=>c.toUpperCase())+' reasoning':key==='serviceTier'?(value==='default'?'Standard tier':label(value)+' tier'):label(key)+': '+value);
  settings.push(j.request.subagents==='none'?'No subagents':j.request.subagents==='integration'?'Integration agent only':'Up to '+j.request.subagentCap+' subagents');
  return settings.join(' · ');
 }
@@ -43,7 +43,7 @@ function renderJobs(){
   const progress=(j.state==='queued'&&decision?.reason)||j.observation?.stage||j.observation?.summary||j.error||'Waiting for the watcher';
   const preview=progress.length>220?progress.slice(0,217)+'…':progress;
   const browser=j.observation?.browserVerified?`<a href="http://127.0.0.1:${Number(j.port)}" target="_blank" rel="noreferrer">Browser :${Number(j.port)}</a>`:'';
-  return `<tr><td class="device">${j.thread_id?thread(j.thread_id,j.name):`<strong>${esc(j.name)}</strong>`}</td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':'')}</td><td class="profile">${esc(j.request.selection.model)}<small>${esc(workerSettings(j))}</small></td><td class="progress"><span title="${esc(progress)}">${esc(preview)}</span><small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td class="actions">${launchControl(j)}${browser}</td></tr>`;
+  return `<tr><td class="device">${j.thread_id?thread(j.thread_id,j.name):`<strong>${esc(j.name)}</strong>`}</td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':'')}</td><td class="profile">${esc(j.request.selection.model)}${j.modelEditable?` <button type="button" data-edit-model="${esc(j.id)}">Edit</button>`:''}<small>${esc(workerSettings(j))}</small></td><td class="progress"><span title="${esc(progress)}">${esc(preview)}</span><small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td class="actions">${launchControl(j)}${browser}</td></tr>`;
  });
  $('jobs').innerHTML=jobs.length?`<div class="table-wrap"><table class="jobs-table"><thead><tr><th>Device</th><th>Status</th><th>Worker</th><th>Progress</th><th>Actions</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:empty(state.jobs.length?'No matching jobs.':'No jobs queued.',state.jobs.length?'Choose another filter.':'Add firmware with re-launch.');
 }
@@ -194,7 +194,7 @@ function render(data){
  const next=data.plan.decisions.find(d=>d.admit)||data.plan.decisions[0];
  $('admission').innerHTML=next?`<p>${esc(next.name)} ${pill(next.admit?'eligible to start':'hold',next.admit?'':'warn')}</p><p class="muted">${esc(next.reason)}</p>`:empty('No pending launch decisions','Add firmware groups with re-launch.');
  $('admission').innerHTML+=`<p class="note">Usage ${data.plan.quotaFresh?'fresh':'missing or stale'}. Maximum ${Number(data.plan.maxParallel)} concurrent workers.</p>`;
- renderJobs();renderAccounts();renderChart();renderTokens();renderHostUsage();renderRecoveryEditor();
+ renderJobs();checkModelEditor();renderAccounts();renderChart();renderTokens();renderHostUsage();renderRecoveryEditor();
  $('recovery-state').textContent=data.recoveryPolicy?.enabled?'enabled':'disabled';
  $('recoveries').innerHTML=data.recoveries?.length?data.recoveries.slice(0,12).map(r=>`<div class="review"><strong>${esc(data.jobs.find(j=>j.id===r.job)?.name||r.job)}</strong> ${pill(r.phase,['attention','launching'].includes(r.phase)?'warn':'neutral')}<p>Rule: ${esc(r.rule_id)} · repair attempts: ${Number(r.repair_attempts)} · ${esc(time(r.updated))}</p>${r.error?`<p class="warn-text">${esc(r.error)}</p>`:''}</div>`).join(''):empty('No thread recovery incidents',data.recoveryPolicy?.enabled?'The watcher uses your saved criteria and bounded repair procedure.':'Waiting for your broken-thread criteria and repair instructions.');
  const reviews=data.jobs.filter(j=>j.review||j.state==='review_pending');$('reviews').innerHTML=reviews.length?reviews.map(j=>`<div class="review"><strong>${esc(j.name)}</strong> ${pill(j.review?.verdict||'review pending')}<p>${esc(j.review?.summary||'Independent audit pending.')}</p>${(j.review?.findings||[]).map(f=>`<p class="warn-text">${esc(typeof f==='object'?JSON.stringify(f):f)}</p>`).join('')}<p>${j.review?.commit?'Commit '+esc(j.review.commit.slice(0,12)):''} ${thread(j.thread_id)}</p></div>`).join(''):empty('No completion claims yet','Completed workers need source, evidence, checks and browser verification before acceptance.');
@@ -202,7 +202,7 @@ function render(data){
  $('events').innerHTML=data.events.length?data.events.slice(0,35).map(e=>`<details class="event" data-event="${esc(e.id)}" ${openedEvents.has(String(e.id))?'open':''}><summary><time>${esc(time(e.time))}</time><span>${esc(label(e.kind))}</span></summary><pre>${esc(e.detail)}</pre></details>`).join(''):empty('No activity yet.');
 
 }
-async function refresh(){try{const r=await fetch('/api/status');if(!r.ok)throw new Error('Dashboard request failed: HTTP '+r.status);render(await r.json());return true;}catch(e){$('error').hidden=false;$('error').textContent=e.message+' Displayed data may be stale.';$('sync').textContent='Connection lost';return false;}}
+async function refresh(){try{const r=await fetch('/api/status');if(!r.ok)throw new Error('Dashboard request failed: HTTP '+r.status);render(await r.json());if(modelEdit)await loadModelCatalog();return true;}catch(e){$('error').hidden=false;$('error').textContent=e.message+' Displayed data may be stale.';$('sync').textContent='Connection lost';return false;}}
 $('jobs').addEventListener('click',e=>{const button=e.target.closest('[data-launch]');if(button)operatorAction('/api/jobs/'+button.dataset.launch+'/launch',{});});
 $('launch-mode').addEventListener('change',e=>operatorAction('/api/launch-mode',{mode:e.target.value}));
 $('filter').addEventListener('change',renderJobs);$('window-filter').addEventListener('change',()=>state&&renderChart());refresh();setInterval(refresh,15000);
@@ -214,3 +214,92 @@ $('add-recovery-rule').addEventListener('click',()=>{appendRecoveryRule();dirtyR
 $('recovery-rules').addEventListener('click',e=>{if(e.target.closest('[data-remove-rule]')){e.target.closest('[data-rule]').remove();dirtyRecoveryEditor();}});
 $('reload-recovery-policy').addEventListener('click',async()=>{if(await refresh())loadRecoveryEditor({policy:state.recoveryPolicy,revision:state.recoveryPolicyRevision,notification:state.recoveryPolicyNotification});});
 $('retry-policy-notification').addEventListener('click',()=>saveRecoveryPolicy(true));
+
+let modelEdit=null;
+let modelCatalog=null;
+let modelSaving=false;
+function selectedProvider(){return modelCatalog?.providers.find(p=>p.providerInstanceId===$('model-provider').value);}
+function selectedModel(){return selectedProvider()?.models.find(m=>m.id===$('model-name').value);}
+function drawModelOptions(saved={}){
+ const descriptors=selectedModel()?.options||[];
+ $('model-options').innerHTML=descriptors.map((d,i)=>{
+  const value=Object.hasOwn(saved,d.id)?saved[d.id]:(d.currentValue??(d.type==='boolean'?false:d.options.find(o=>o.isDefault)?.id??d.options[0]?.id));
+  return `<label>${esc(d.label)} ${d.type==='boolean'?`<input type="checkbox" data-model-option="${esc(d.id)}" ${value?'checked':''}>`:`<select data-model-option="${esc(d.id)}" required>${d.options.map(o=>`<option value="${esc(o.id)}" ${o.id===value?'selected':''}>${esc(o.label||o.id)}</option>`).join('')}</select>`}</label>`;
+ }).join('');
+ $('model-save').disabled=!selectedModel();
+}
+function drawModels(saved){
+ const models=selectedProvider()?.models||[];
+ $('model-name').innerHTML=models.map(m=>`<option value="${esc(m.id)}">${esc(m.label||m.id)}</option>`).join('');
+ if(saved)$('model-name').value=saved.model;
+ drawModelOptions(saved?.options);
+}
+function drawProviders(saved){
+ $('model-provider').innerHTML=(modelCatalog?.providers||[]).map(p=>`<option value="${esc(p.providerInstanceId)}">${esc(p.displayName||p.providerInstanceId)}</option>`).join('');
+ if(saved)$('model-provider').value=saved.instanceId;
+ drawModels(saved);
+}
+async function modelPost(path,payload){
+ const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:JSON.stringify(payload)});
+ const result=await response.json();if(!response.ok)throw new Error(result.error||'Model update failed.');return result;
+}
+function showCatalogStatus(){
+ if(!modelCatalog)return;
+ $('model-catalog-status').textContent=(modelCatalog.fetchedAt?'T3 catalog updated '+time(modelCatalog.fetchedAt):'No T3 catalog loaded')+(modelCatalog.stale?' · stale':'')+(modelCatalog.refreshPending?' · refresh requested; waiting for watcher':'')+'.';
+}
+async function loadModelCatalog(){
+ const response=await fetch('/api/models');if(!response.ok)throw new Error('Model catalog unavailable.');
+ const next=await response.json();
+ if(modelEdit&&modelCatalog&&modelCatalog.fetchedAt!==next.fetchedAt&&!modelSaving){
+  const saved={instanceId:$('model-provider').value,model:$('model-name').value,options:{}};
+  for(const input of $('model-options').querySelectorAll('[data-model-option]'))saved.options[input.dataset.modelOption]=input.type==='checkbox'?input.checked:input.value;
+  modelCatalog=next;drawProviders(saved);checkModelEditor();
+ }else modelCatalog=next;
+ showCatalogStatus();
+}
+async function openModelEditor(id){
+ if(modelSaving)return;
+ const job=state.jobs.find(j=>j.id===id);if(!job?.modelEditable)return;
+ modelEdit={id,revision:job.modelRevision};$('model-editor').hidden=false;
+ $('model-editor-title').textContent='Worker model · '+job.name;
+ $('model-status').textContent='Loading T3 models…';$('model-fields').disabled=true;
+ try{
+  await loadModelCatalog();drawProviders(job.request.selection);$('model-pool').value=job.request.quotaPool;
+  $('model-status').textContent=selectedModel()?'': 'The saved provider or model is unavailable. Choose an available model or refresh the catalog.';
+ }catch(error){$('model-status').textContent=error.message;}
+ finally{$('model-fields').disabled=false;checkModelEditor();}
+}
+function checkModelEditor(){
+ if(!modelEdit||modelSaving)return;
+ const job=state.jobs.find(j=>j.id===modelEdit.id);
+ const locked=!job?.modelEditable;
+ $('model-save').disabled=locked||job.modelRevision!==modelEdit.revision||!selectedModel();
+ if(locked)$('model-status').textContent='This job has begun launching. Model editing is closed.';
+ else if(job.modelRevision!==modelEdit.revision)$('model-status').textContent='Saved settings changed elsewhere. Your draft is retained; reload saved settings before saving.';
+}
+$('jobs').addEventListener('click',e=>{const button=e.target.closest('[data-edit-model]');if(button)openModelEditor(button.dataset.editModel);});
+$('model-provider').addEventListener('change',()=>{drawModels();$('model-pool').value=($('model-name').value.startsWith('claude')||$('model-provider').value==='claudeAgent')?'claude':'codex';checkModelEditor();});
+$('model-name').addEventListener('change',()=>{drawModelOptions();$('model-pool').value=$('model-name').value.startsWith('claude')?'claude':'codex';checkModelEditor();});
+$('model-cancel').addEventListener('click',()=>{modelEdit=null;$('model-editor').hidden=true;});
+$('model-reload').addEventListener('click',async()=>{const id=modelEdit?.id;if(id&&await refresh())openModelEditor(id);});
+$('model-refresh').addEventListener('click',async()=>{
+ $('model-refresh').disabled=true;
+ try{
+  modelCatalog=await modelPost('/api/models/refresh',{});showCatalogStatus();
+  $('model-status').textContent=modelCatalog.notification?.sent?'Refresh requested from the watcher.':'Refresh saved. '+(modelCatalog.notification?.reason||'Waiting for the watcher.');
+ }catch(error){$('model-status').textContent=error.message;}
+ finally{$('model-refresh').disabled=false;}
+});
+$('model-form').addEventListener('submit',async e=>{
+ e.preventDefault();if(modelSaving||!modelEdit)return;
+ const model=selectedModel();if(!model)return;
+ const options={};for(const input of $('model-options').querySelectorAll('[data-model-option]'))options[input.dataset.modelOption]=input.type==='checkbox'?input.checked:input.value;
+ const payload={expectedRevision:modelEdit.revision,selection:{instanceId:$('model-provider').value,model:model.id,options},quotaPool:$('model-pool').value};
+ modelSaving=true;$('model-fields').disabled=true;
+ try{
+  const result=await modelPost('/api/jobs/'+modelEdit.id+'/model',payload);
+  modelEdit=null;$('model-editor').hidden=true;await refresh();
+  $('action-status').textContent=result.job.modelRevision===payload.expectedRevision?'Worker model unchanged.':'Worker model saved. Fresh admission checks are required.'+(state.plan.launchMode==='manual'?' Click Launch to approve this model.':'');
+ }catch(error){$('model-status').textContent=error.message+' Your draft has been retained.';}
+ finally{modelSaving=false;$('model-fields').disabled=false;}
+});

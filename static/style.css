@@ -139,3 +139,11 @@ textarea { display: block; width: 100%; margin-top: 5px; min-height: 76px; resiz
   .rule-editor { padding: 10px; }
   .rule-editor select { display: block; margin: 6px 0 0; max-width: 100%; }
 }
+#model-editor { border-top: 1px solid var(--edge); margin-top: 16px; padding-top: 16px; }
+#model-fields { border: 0; padding: 0; margin: 12px 0; min-width: 0; }
+.model-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.model-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.model-options select { max-width: 100%; }
+.profile button { font-size: 11px; padding: 2px 6px; margin-left: 6px; }
+#model-catalog-status { margin-right: 8px; }
+@media (max-width: 650px) { .model-options { align-items: flex-start; flex-direction: column; } }

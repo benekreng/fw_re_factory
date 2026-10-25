@@ -40,6 +40,24 @@
       </select></label>
     </div>
     <div id="jobs"></div>
+    <section id="model-editor" hidden aria-label="Edit queued worker model">
+      <h3 id="model-editor-title">Worker model</h3>
+      <p class="note">Changes apply before launch. Saving returns the job to the queue for fresh admission checks and clears its previous Launch approval.</p>
+      <form id="model-form">
+        <fieldset id="model-fields">
+          <div class="model-options">
+            <label>Provider <select id="model-provider" required></select></label>
+            <label>Model <select id="model-name" required></select></label>
+            <div id="model-options" class="model-options"></div>
+            <label>Quota pool <select id="model-pool"><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
+          </div>
+          <p class="note">Choose the quota pool charged by your provider or proxy route.</p>
+          <div class="policy-actions"><button type="submit" id="model-save">Save model</button><button type="button" id="model-cancel">Cancel</button><button type="button" id="model-reload">Reload saved settings</button></div>
+        </fieldset>
+      </form>
+      <p class="note"><span id="model-catalog-status"></span> <button type="button" id="model-refresh">Refresh models from T3</button></p>
+      <p id="model-status" class="muted small" role="status" aria-live="polite"></p>
+    </section>
   </section>
 
   <section id="usage">

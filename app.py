@@ -231,6 +231,9 @@ class Store:
         for k in ['request', 'launch_result', 'observation', 'review']:
             if result.get(k):
                 result[k] = json.loads(result[k])
+        from model_editor import revision, EDITABLE
+        result['modelRevision'] = revision(result['request'])
+        result['modelEditable'] = result['state'] in EDITABLE and not result.get('thread_id')
         if result.get('thread_id'):
             result['threadUrl'] = 't3-thread://v1/' + result['thread_id']
         return result

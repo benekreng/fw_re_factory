@@ -10,7 +10,7 @@ This factory depends on [benekreng/bens_skills](https://github.com/benekreng/ben
 - **Python controller (`engine.py`, `controller.py`, `recovery.py`):** persists the queue and observations, samples usage, estimates depletion, checks admission and ownership, prepares prompts, records checks, and sends watcher wake messages. The daemon runs without an agent conversation being active.
 - **Watcher agent:** reads the controller's instructions and saved state, uses T3 to launch workers, examines their actual output, resumes unfinished work and independently audits completion. The agent performs the source and behavior review; Python enforces the recorded state transitions and checks.
 - **Worker agents:** carry out the firmware-rewrite task in their own device directories using their saved model/settings and subagent policy.
-- **Dashboard:** displays controller state, provides a manual/automatic mode selector, and lets the operator approve individual queued jobs with Launch. It also edits the independent recovery policy and immediately posts saved updates to the watcher. A compact host line shows aggregate CPU and RAM usage. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
+- **Dashboard:** displays controller state, provides a manual/automatic mode selector, lets the operator approve individual queued jobs with Launch, and edits model/settings for unlaunched jobs. It also edits the independent recovery policy and immediately posts saved updates to the watcher. A compact host line shows aggregate CPU and RAM usage. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
 
 The database is the persistent record. The watcher can be replaced without recreating the queue or losing usage and review history.
 
@@ -124,7 +124,7 @@ For the requested Bohm profile, T3 receives:
 }
 ```
 
-Other requests use their own saved selection. The watcher refreshes the live capability catalog and passes the exact selection to native `t3_thread_launch`, with the device project and explicit root workspace. Writing “use high” in the task text would not configure the model. The returned provider, model, options and project are checked; a mismatch requires investigation, not another blind launch.
+Other requests use their own saved selection. Before launching begins, the dashboard can update that selection using T3’s capability descriptors. Saving preserves the assignment, requeues the job for admission under its selected quota pool, clears previous manual Launch approval, and archives prepared prompt/skill evidence. Running workers and recovery replacements cannot be edited. The editor shows the catalog timestamp and supports a durable watcher-backed refresh request; normal watcher checks refresh catalogs older than one hour. The watcher refreshes the live capability catalog and passes the exact selection to native `t3_thread_launch`, with the device project and explicit root workspace. Writing “use high” in the task text would not configure the model. The returned provider, model, options and project are checked; a mismatch requires investigation, not another blind launch.
 
 ### 7. Replacement worker prompt
 
@@ -239,7 +239,7 @@ Do not invent devices or add firmware beyond the approved files.
 - Validate the exact model/settings against live capabilities.
 - Claim and prepare the job; preserve/hash selected originals.
 - Register or reconcile the actual device project/workspace.
-- Persist launching before calling T3.
+- Reserve with `launching ID MODEL_REVISION` using the revision from the prepared job. A stale revision fails; reload and repeat admission/preparation instead of launching stale settings. Use the exact model selection returned by the reservation.
 - Launch with exact saved modelSelection, root workspace and
   the complete prepared START_PROMPT as the message.
 - Retain and validate the returned thread ID and launch result.

@@ -64,7 +64,7 @@ An agent submitting jobs should preserve the mode and must not use `launch` or c
 
 Clicking Launch requests one watcher turn even when periodic watcher messages are paused. If the watcher is busy, that notification waits until it is idle. This does not resume periodic messages. If the one-shot turn is blocked by usage, concurrency or provider availability, the approval remains saved; use **Retry launch** to request another turn while periodic messages remain paused. A lost delivery acknowledgment is retained as uncertain rather than automatically resending. The dashboard requires the registered watcher; if none is ready, create/adopt it using the watcher commands first.
 
-Dashboard launch and recovery-policy controls are available to clients permitted to reach its Tailscale listener. Mutation requests require the dashboard's same-origin page and request token. Queue submission, model/settings and firmware selection remain in the CLI.
+Dashboard launch and recovery-policy controls are available to clients permitted to reach its Tailscale listener. Mutation requests require the dashboard's same-origin page and request token. Queue submission and firmware selection remain in the CLI. Model/settings can be edited for unlaunched jobs in the dashboard.
 
 ### Choose worker subagents
 
@@ -141,6 +141,14 @@ The daemon wakes an idle watcher every **240 seconds by default**, coalesces not
 Workers use the current `/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md`, with a hashed snapshot and explicit user overrides appended. A no-subagent request overrides the skill's fresh-agent integration requirement, and that exception must be documented.
 
 `CONTROLLER.md` defines ownership, launch/recovery and short-check behavior. `docs/REVIEW.md` defines independent artifact/source/behavior/browser review. A run under two hours triggers more scrutiny, never an arbitrary minimum duration. Completion requires evidence for assignment, originals, specification, exact, faithful, main and browser. The recorder requires a reviewed current commit and a successful captured check at that commit; a model's report alone does not pass the gate. This mechanical guard cannot prove semantic code quality: the watcher must actually perform the specified audit.
+
+## Change a queued worker’s model
+
+Click **Edit** beside its model in the Worker queue. Choose the provider, model, supported settings and actual quota pool, then **Save model**. The controls come from T3’s live capability catalog, including custom models; each provider keeps its exact option names and supported values. GPT 6.1 Sol, GPT 6 Astra and Opus 5.5 appear when offered by the configured T3 providers.
+
+Editing applies only to jobs that have not begun launching. Existing workers and recovery replacements keep their saved model. A saved change returns even a prepared job to the queue, clears its previous manual Launch approval, and requires fresh admission checks under the selected quota pool. In manual mode, click Launch again. Firmware, subagent policy, workspace and browser port remain as selected; previous settings and prepared evidence are retained.
+
+The editor shows the catalog timestamp and whether it is stale. **Refresh models from T3** persists a refresh request for the watcher; it does not contact provider APIs or invent a separate model list. A busy watcher handles it when idle. An explicit refresh can request one watcher turn while periodic messages remain paused. The watcher also refreshes stale catalogs (after one hour) during normal checks and always refreshes before launching. If the watcher cannot run, cached models stay visible with their timestamp and the refresh remains pending. Saving validates the exact model and all its options again. Concurrent edits and stale launch reservations are rejected.
 
 ## Edit recovery rules in the dashboard
 
