@@ -1,0 +1,25 @@
+Configure the watcher's broken-thread recovery policy using the rules below. Save the policy persistently with the recovery helpers and record this message as its source. Do not invent additional broken-thread criteria or repair steps. Keep automatic watcher messages paused until I explicitly resume them.
+
+Broken-thread criteria:
+[I will supply the conditions here. Give each condition a short rule ID.]
+
+For each rule, choose either:
+- repair_then_replace: apply the repair instructions below, verify the result, and replace the thread if the bounded attempts fail;
+- replace: abandon the matching thread without attempting repair.
+
+Repair instructions for each applicable rule:
+[I will supply the exact procedure here.]
+
+How to verify a repair worked:
+[I will supply the success/failure check here.]
+
+Limits:
+- Maximum repair attempts per incident: [number]
+- Maximum fresh replacements per job: [number]
+- Minimum time between replacements: [seconds]
+
+When a rule authorizes replacement, stop and archive the broken worker, then create a fresh top-level worker in the same project directory with the saved model, settings and subagent policy. Add a short continuation preamble saying another agent worked on this project, its work is in the directory, and the new worker should inspect it and continue. Include the complete current standard task prompt, with all approved prompt edits, inside clearly marked boundaries. Keep the launcher run details separate and at the very bottom, exactly once. Keep the original firmware and current project files. The new worker receives the task and current project evidence only: no old chat, summary, errors, repair transcript or abandoned-thread identity. The continuation preamble may acknowledge prior work, without explaining the thread failure.
+
+Bind the existing job to the fresh thread, clear cached worker observations/review, require fresh independent checks, and ignore the retired conversation. If a launch response is lost, reconcile the saved launch intent against existing T3 threads before retrying. Stop automatic recovery and report to me when a limit is reached or the outcome remains uncertain. A root-cause explanation is not required to replace a thread that matches my criteria.
+
+Keep broken-thread errors and repair diagnostics in the controller's recovery records, not in project handover notes or messages visible to the fresh worker.

@@ -1,0 +1,103 @@
+# fw_re_factory
+
+A terminal launcher, durable Python controller, one T3 watcher, and a local read-only dashboard for firmware RE work.
+
+See [Worker prompts, watcher prompts and the workflow](docs/PROMPTS_AND_WORKFLOW.md) for a section-by-section explanation of both prompts, how the agent and scripts work together, usage scheduling, completion review and replacement workers.
+
+## Skill dependency
+
+This project depends on [benekreng/bens_skills](https://github.com/benekreng/bens_skills), specifically its `firmware-rewrite` workflow:
+
+- `firmware-rewrite/START_PROMPT.md` supplies the reusable worker task.
+- `firmware-rewrite/SKILL.md` defines the RE stages, deliverables and completion criteria.
+
+The launcher currently reads these files from `/home/vesper/RE/bens_skills/firmware-rewrite/`. Both must be present when preparing a worker: the launcher renders the prompt and snapshots the skill. The worker reads the skill by its local path; its prompt also includes an authenticated single-file download command if that skill file later needs restoring. Access to this private repository requires GitHub authentication. A full clone of `bens_skills` is not required; the dependency is on these instruction files.
+
+[benekreng/fw_re](https://github.com/benekreng/fw_re) is a separate shared-code dependency used by workers under their device project's `resources/` directory. It does not contain this factory or replace the skill dependency.
+
+The factory lives at `/home/vesper/fw_re_factory`. The installed `re-launch` command and existing `firmware-watch-*` service names remain the operational entry points. `/home/vesper/firmware-re-launcher` is a compatibility symlink for previously saved instruction paths.
+
+## Use
+
+```bash
+re-launch                         # interactive queue wizard
+re-launch watcher show
+re-launch watcher set THREAD_ID   # transfer the watch; keep workers and history
+re-launch worker replace DEVICE NEW_THREAD_ID # adopt an existing replacement worker
+re-launch plan                    # why the next job will start or wait
+re-launch config schedulingPaused true  # hold launches/resumes; keep monitoring
+re-launch config schedulingPaused false # allow scheduling again
+re-launch cancel JOB_ID           # cancel an unstarted queued job
+re-launch sample                  # refresh account usage now
+re-launch tokens                  # refresh local ccusage totals
+re-launch config                  # inspect local configuration
+re-launch config policy weekly-first
+re-launch config wakeSeconds 240
+```
+
+Dashboard: http://100.91.196.107:8787 over this machine's Tailscale adapter. It refreshes every 15 seconds and is reachable from devices on the tailnet permitted by its access rules. The user service binds specifically to that Tailscale IPv4 address. Manual dashboard runs default to loopback; use `re-launch dashboard --host 100.91.196.107` for the Tailscale listener. No remote assets are needed.
+
+The wizard chooses provider, exact model settings, actual quota pool, subagent policy and cap, device names/directories, firmware/reference paths, target host, concurrency, scheduling policy, optional cooperative checkpoint pauses and wake interval. It presents the concrete request before submission. Subsequent submissions reuse the same watcher. A single supplied version is trusted latest; multiple versions, including those inside archives, require compatible-latest selection. Firmware stays local.
+
+Firmware root: `/home/vesper/firmware_downloads` (the verified MacBook copy). New projects: `/home/vesper/RE/<device>`. No RE jobs are preloaded. Existing legacy agents are not automatically imported or resumed.
+
+## How it works
+
+The controller stores queue records, ownership generations, observations, check logs, reviews, quota snapshots and token reports in `data/launcher.sqlite`. It reads account usage using the existing `proxy-usage` wrapper; the wrapper uses its key file without putting credentials in prompts or command arguments. Local account identifiers are hashed in the dashboard.
+
+On the first submitted request, the launcher starts one watcher through the T3 CLI using the dedicated project's configured default profile: **Codex / gpt-6.1-sol / high / default service tier**. The watcher verifies inherited settings before launching workers. T3's CLI cannot set every model option, so worker creation is performed by the watcher using native `t3_thread_launch` with exact saved settings and an explicit project/root workspace. The CLI does not silently replace settings. Catalog options come from the live T3 capabilities, cached with a timestamp and refreshed by the watcher.
+
+The dedicated watcher project is registered in T3. If its default profile is edited, update `data/config.json` watcherSelection and the project's actual T3 setting together. A user handover to an existing thread authorizes that thread's current model. Any uncertain watcher/worker creation requires reconciling T3 thread lists rather than automatically trying another creation.
+
+The daemon wakes an idle watcher every **240 seconds by default**, coalesces notifications, and avoids sending status prompts while the watcher is already running or has a queued request. The interval is configurable; a four-minute wake does **not** guarantee cache retention. Subscription cache TTL is not established by an API cache document. `ccusage` reports actual available cached-token fields, not a claimed TTL. The watcher and quota samples use separate timers; token reports default to 15 minutes.
+
+`watcher set` validates the new thread, increments ownership atomically and routes future notifications there. Every helper command checks the owner ID/epoch under a lock, and old wakes must stop. Existing workers continue. Native T3 external calls cannot share the SQLite lock: a launch already in flight during handover must be reconciled by its returned ID/job marker. This is not a distributed exactly-once transaction.
+
+## Usage scheduling and boundaries
+
+- Start at most one new job per sample, up to the global and per-batch concurrency limits. Before adding concurrency, require at least three useful intervals and 15 minutes of measurements.
+- Retain each account and limit window separately. Use percentage points per hour and projected time to exhaustion, with workload/profile snapshots for estimated rate per active worker-hour. Rates reset across quota reset boundaries and changes in the active model/settings/subagent mix. Other account activity can affect the estimates; these are not causal per-job billing measurements.
+- The default `short-window` policy gives short windows precedence (Claude's five-hour window); if only a weekly window exists, use that. `balanced` checks every relevant forecast; `weekly-first` gives weekly forecasts precedence. Hard exhaustion always blocks, including weekly limits under the short-window policy. Clearly named Opus/Sonnet/Haiku scoped windows are matched to the chosen model; unknown scopes are treated conservatively.
+- Hold additions when estimated demand (including an additional worker and a margin) would exhaust the selected limit before reset. Different worker profiles need their own calibration. This is deliberately conservative while learning; it cannot guarantee exact depletion at a reset.
+- Available account headroom is not summed. Rotation is **not implemented**: this usage API is a reader, and proxy routing controls have not been verified. An exhausted enabled account may therefore hold that pool's queue until routing or usage recovers.
+- Voucher counts and expiry are displayed; approaching expiry produces recommendations. Redemption is **not implemented**. Unexpected usage decreases are labeled scheduled resets only when the old boundary was crossed; otherwise rolling recovery and provider replenishment remain possible.
+- Missing/failed quota data never becomes zero. Stale or incomplete data holds new launches. Worker retries happen in the same thread after actual recovery evidence. The watcher recommends cooperative checkpoint pauses when two or more workers in a pool overshoot the measured budget. Execution is opt-in (`re-launch config checkpointPauses true` or the wizard); it requests a saved checkpoint, waits for acknowledgment, and parks one worker until the selected reset. At least one worker continues. Paused and usage-limited workers release concurrency slots; resumes reserve capacity through the same admission guard. No worker is abruptly killed.
+- `ccusage@20.0.43` is pinned in `vendor/package-lock.json`. Claude/Codex local session reports and their totals remain separate from subscription limits. Repeated cumulative reports are not added together. Missing logs and failed readers remain unknown. No API-dollar estimate is used as subscription balance. A worker can be attributed only if its provider-session mapping is established; otherwise reports remain local/account totals.
+
+## Completion review
+
+Workers use the current `/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md`, with a hashed snapshot and explicit user overrides appended. A no-subagent request overrides the skill's fresh-agent integration requirement, and that exception must be documented.
+
+`CONTROLLER.md` defines ownership, launch/recovery and short-check behavior. `docs/REVIEW.md` defines independent artifact/source/behavior/browser review. A run under two hours triggers more scrutiny, never an arbitrary minimum duration. Completion requires evidence for assignment, originals, specification, exact, faithful, main and browser. The recorder requires a reviewed current commit and a successful captured check at that commit; a model's report alone does not pass the gate. This mechanical guard cannot prove semantic code quality: the watcher must actually perform the specified audit.
+
+## Replace a broken worker
+
+Automatic detection/repair/replacement is separately controlled by a persisted, initially disabled user policy. See [THREAD_RECOVERY.md](docs/THREAD_RECOVERY.md) for the durable procedure and [RECOVERY_MESSAGE.txt](docs/RECOVERY_MESSAGE.txt) for a message to fill in later. No broken-thread criteria or provider repair instructions have been assumed. `re-launch recovery policy` shows the current policy; `re-launch recovery disable` stops further automatic recovery starts. Watcher message pause is independent.
+
+Create the continuation thread in the same T3 project/directory, then stop and archive the broken thread in T3. Run `re-launch worker replace DEVICE NEW_THREAD_ID`, where DEVICE is the device directory name (such as `ohmforce_bohm`) or job ID. Optional `--expected-old OLD_THREAD_ID` checks that the old binding has not changed. The replacement must match the project's workspace and the job's provider/model; its existing model options are not changed or silently claimed verified.
+
+The command adopts the existing thread without launching, restarting or messaging it. It preserves the project's files and firmware provenance, clears the watcher's cached worker observations and review, excludes prior checks from the new completion gate, and resumes monitoring of the current thread. The watcher ignores the retired conversation and sends no old messages or handover summary to the replacement. Operator records and quota history remain in the controller. The watcher generation increments so stale helper calls fail. Repeating the same replacement is idempotent.
+
+## Services and recovery
+
+```bash
+systemctl --user status firmware-watch-dashboard firmware-watch-controller
+journalctl --user -u firmware-watch-controller -n 30
+systemctl --user restart firmware-watch-dashboard firmware-watch-controller
+systemctl --user stop firmware-watch-controller  # stop notifications/sampling; workers continue
+```
+
+These are user services, active with the user's service manager. They do not enable system-wide lingering. The controller has nothing to launch until the user submits an approved request. State and secrets are outside source control; back up `data/` locally. The SQLite database uses normal committed transactions, and each connection is closed after use.
+
+For scripted requests: `re-launch enqueue REQUEST.json` uses the same validation, idempotent request ID and watcher notification as the wizard. `--no-dispatch` saves the approved queue without creating/notifying a watcher. This flag is not a simulation: a later active watcher can process those queued records. Test with an isolated `--root` instead.
+
+If watcher bootstrap delivery is uncertain, inspect `t3 thread list --project /home/vesper/fw_re_factory --json`, identify the saved bootstrap title from events, then use `re-launch watcher set ID`. Do not clear the bootstrap guard and create a duplicate.
+
+## Verification
+
+```bash
+python3 -m unittest discover -s tests -v
+node --check static/app.js
+```
+
+Tests use isolated firmware and databases, mocked T3 launches and quota data. Browser checks cover the real local page, chart/filter rendering and responsive layout. No production firmware workers are launched by tests. The first real worker is the remaining end-to-end exercise of the live T3 launch/review workflow.

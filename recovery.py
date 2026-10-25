@@ -1,0 +1,237 @@
+"""User-defined, bounded thread recovery. External repair/launch tools stay with the watcher."""
+import hashlib
+import json
+from pathlib import Path
+import re
+import uuid
+
+from app import Problem, TERMINAL, now, sha
+import engine
+
+DEFAULT_POLICY={'enabled':False,'source':'Awaiting user instructions','rules':[],
+                'maxReplacementsPerJob':3,'cooldownSeconds':900}
+CLOSED={'recovered','replaced','cancelled','attention'}
+
+
+def validate_policy(value):
+    if not isinstance(value,dict):raise Problem('Recovery policy must be an object.')
+    if type(value.get('enabled')) is not bool:raise Problem('Specify enabled as true or false.')
+    if not isinstance(value.get('source'),str) or not value['source'].strip():raise Problem('Record the user message or file supplying this policy.')
+    for key,low,high in [('maxReplacementsPerJob',1,20),('cooldownSeconds',0,86400)]:
+        n=value.get(key)
+        if type(n) is not int or not low<=n<=high:raise Problem(f'{key} must be {low}–{high}.')
+    rules=value.get('rules')
+    if not isinstance(rules,list) or len(rules)>32:raise Problem('Supply up to 32 recovery rules.')
+    if value['enabled'] and not rules:raise Problem('Recovery cannot be enabled without user-defined rules.')
+    seen=set();clean=[]
+    for rule in rules:
+        if not isinstance(rule,dict):raise Problem('Every rule must be an object.')
+        key=rule.get('id','')
+        if not isinstance(key,str) or not re.fullmatch('[a-z0-9][a-z0-9_-]{0,63}',key) or key in seen:raise Problem('Rule IDs must be unique lowercase identifiers.')
+        seen.add(key)
+        if not isinstance(rule.get('when'),str) or not rule['when'].strip():raise Problem('Describe what counts as broken for each rule.')
+        action=rule.get('action')
+        if action not in ('replace','repair_then_replace'):raise Problem('Rule action must be replace or repair_then_replace.')
+        steps=rule.get('repairSteps',[]);attempts=rule.get('maxRepairAttempts',0);verify=rule.get('verify','')
+        if not isinstance(steps,list) or not all(isinstance(x,str) and x.strip() for x in steps):raise Problem('repairSteps must be nonempty instruction strings.')
+        if type(attempts) is not int or not 0<=attempts<=5:raise Problem('maxRepairAttempts must be 0–5.')
+        if not isinstance(verify,str):raise Problem('verify must describe how to check the repair.')
+        if action=='repair_then_replace' and (not steps or not verify.strip() or attempts<1):raise Problem('Repair rules need repair steps, verification instructions and a bounded attempt count.')
+        clean.append({'id':key,'when':rule['when'],'action':action,'repairSteps':steps,
+                      'verify':verify,'maxRepairAttempts':attempts})
+    return {k:value[k] for k in ('enabled','source','maxReplacementsPerJob','cooldownSeconds')}|{'rules':clean}
+
+
+def policy(s):
+    p=s.data/'recovery-policy.json'
+    return validate_policy(json.loads(p.read_text())) if p.exists() else dict(DEFAULT_POLICY)
+
+
+def set_policy(s, value):
+    from controller import atomic_json
+    value=validate_policy(value)
+    atomic_json(s.data/'recovery-policy.json',value)
+    engine.event(s,'recovery_policy_updated',{'enabled':value['enabled'],'source':value['source'],'ruleIds':[r['id'] for r in value['rules']]})
+    return value
+
+
+def _decode(row):
+    result=dict(row)
+    for key in ('policy','result'):
+        if result.get(key):result[key]=json.loads(result[key])
+    return result
+
+
+def get(s, identifier):
+    with s.connect() as c:row=c.execute('SELECT * FROM recoveries WHERE id=?',(identifier,)).fetchone()
+    if not row:raise Problem('Unknown recovery record.',404)
+    return _decode(row)
+
+
+def records(s):
+    with s.connect() as c:return [_decode(x) for x in c.execute('SELECT * FROM recoveries ORDER BY created DESC')]
+
+
+def _update(s, identifier, **values):
+    values['updated']=now()
+    with s.connect() as c:
+        c.execute('UPDATE recoveries SET '+','.join(k+'=?' for k in values)+' WHERE id=?',
+                  [*[json.dumps(v) if isinstance(v,(dict,list)) else v for v in values.values()],identifier])
+    return get(s,identifier)
+
+
+def _show(s, thread):
+    value=engine.unwrap(s.cli('thread','show',thread,'--messages','0','--json'))
+    value=value.get('thread',value)
+    if value.get('threadId',value.get('id'))!=thread:raise Problem('T3 returned a different thread.')
+    return value
+
+
+def _retired(s, thread):
+    t=_show(s,thread)
+    if not t.get('archived') or t.get('activeRunId') or t.get('pendingRequestCount',0):raise Problem('Stop and archive the broken thread before preparing its replacement.',409)
+
+
+def _enabled(s):
+    p=policy(s)
+    if not p['enabled']:raise Problem('Automatic thread recovery is disabled; user criteria are required.',409)
+    return p
+
+
+def _bounds(s, job, p):
+    with s.connect() as c:
+        count=c.execute('SELECT COUNT(*) FROM recoveries WHERE job=? AND replacement_thread IS NOT NULL',(job,)).fetchone()[0]
+        recent=c.execute("SELECT updated FROM recoveries WHERE job=? AND phase='replaced' ORDER BY updated DESC LIMIT 1",(job,)).fetchone()
+    if count>=p['maxReplacementsPerJob']:raise Problem('Replacement limit reached; user intervention is required.',409)
+    if recent and engine.stamp(now())-engine.stamp(recent[0])<p['cooldownSeconds']:raise Problem('Replacement cooldown has not elapsed.',409)
+
+
+def _ticket(s, identifier, require_policy=False):
+    ticket=get(s,identifier);job=s.job(ticket['job'])
+    if ticket['phase'] not in ('replaced',) and job['thread_id']!=ticket['worker_thread']:
+        # A crash after binding but before closing the ticket can be reconciled by record.
+        if job['thread_id']!=ticket.get('replacement_thread'):raise Problem('This recovery belongs to a superseded worker.',409)
+    if require_policy:
+        current=_enabled(s)
+        if current!=ticket['policy']:raise Problem('Recovery policy changed; cancel and reassess this incident.',409)
+    return ticket,job
+
+
+def _artifact(s, ticket):return s.data/'jobs'/ticket['job']/'recoveries'/ticket['id']
+
+
+def _evidence(value):
+    if not isinstance(value,str) or not value.strip() or len(value)>12000:raise Problem('Record concrete observed evidence (up to 12000 characters).')
+    return value
+
+
+def dispatch(s, owner, epoch, action, identifier=None, payload=None):
+    """All recovery transitions fence ownership; this function never sends agent messages."""
+    payload=payload or {}
+    with engine.lock(s):
+        engine.fence(s,owner,epoch)
+        if action=='policy':return policy(s)
+        if action=='policy_set':return set_policy(s,payload)
+        if action=='list':return records(s)
+        if action=='show':return get(s,identifier)
+        if action=='report':
+            p=_enabled(s);job=s.job(identifier)
+            if not job['thread_id'] or job['state'] in TERMINAL:raise Problem('An unfinished existing worker is required.')
+            if payload.get('expectedThreadId')!=job['thread_id']:raise Problem('Observed thread no longer matches this job.',409)
+            rule=next((r for r in p['rules'] if r['id']==payload.get('ruleId')),None)
+            if not rule:raise Problem('The observation must match an explicit user-defined rule.')
+            evidence=_evidence(payload.get('evidence'))
+            with s.connect() as c:
+                opened=c.execute("SELECT * FROM recoveries WHERE job=? AND phase NOT IN ('recovered','replaced','cancelled','attention')",(identifier,)).fetchone()
+                orphan=c.execute("SELECT id FROM recoveries WHERE job=? AND phase='attention' AND replacement_thread IS NOT NULL AND replacement_thread!=?",(identifier,job['thread_id'])).fetchone()
+            if opened:return _decode(opened)
+            if orphan:raise Problem('A previous uncertain replacement needs reconciliation before another recovery.',409)
+            _bounds(s,identifier,p)
+            rid=str(uuid.uuid4());at=now();phase='repair_pending' if rule['action']=='repair_then_replace' else 'retire_pending'
+            with s.connect() as c:
+                c.execute('INSERT INTO recoveries(id,job,worker_thread,phase,created,updated,policy,rule_id,evidence) VALUES (?,?,?,?,?,?,?,?,?)',
+                          (rid,identifier,job['thread_id'],phase,at,at,json.dumps(p),rule['id'],evidence))
+            s.patch(identifier,state='recovery_pending',observation={'recoveryId':rid,'summary':'Recovery rule matched; follow the saved bounded procedure.','observedAt':at})
+            engine.event(s,'thread_recovery_reported',{'recoveryId':rid,'ruleId':rule['id']},identifier)
+            return get(s,rid)
+        ticket,job=_ticket(s,identifier,require_policy=action in ('repair_begin','prepare','launch'))
+        rule=next(r for r in ticket['policy']['rules'] if r['id']==ticket['rule_id'])
+        if action=='repair_begin':
+            if ticket['phase']!='repair_pending' or ticket['repair_attempts']>=rule['maxRepairAttempts']:raise Problem('No further repair attempt is authorized.',409)
+            return _update(s,identifier,phase='repairing',repair_attempts=ticket['repair_attempts']+1)
+        if action=='repair_result':
+            if ticket['phase']!='repairing' or type(payload.get('working')) is not bool:raise Problem('Record the outcome of the current repair attempt.')
+            evidence=_evidence(payload.get('evidence'))
+            if payload['working']:
+                actual=_show(s,ticket['worker_thread'])
+                if actual.get('archived'):raise Problem('An archived thread cannot be recorded as repaired.')
+                state='running' if actual.get('activeRunId') else 'attention'
+                s.patch(job['id'],state=state,observation={'summary':'Repair verified; normal observation can continue.','observedAt':now()})
+                return _update(s,identifier,phase='recovered',result={'evidence':evidence,'working':True})
+            phase='repair_pending' if ticket['repair_attempts']<rule['maxRepairAttempts'] else 'retire_pending'
+            return _update(s,identifier,phase=phase,result={'evidence':evidence,'working':False})
+        if action=='prepare':
+            if ticket['phase']=='replacement_ready':return ticket|{'promptPath':str(_artifact(s,ticket)/'START_PROMPT.txt')}
+            if ticket['phase']!='retire_pending':raise Problem('Finish the authorized repair procedure before replacing the thread.',409)
+            _bounds(s,job['id'],ticket['policy']);_retired(s,ticket['worker_thread'])
+            from controller import render_worker_prompt, atomic_json
+            destination=Path(job['request']['destination']).resolve()
+            if not destination.is_relative_to(s.projects) or not destination.is_dir():raise Problem('The existing project directory is unavailable.')
+            marker=destination/'LAUNCH_REQUEST.json'
+            if not marker.is_file() or json.loads(marker.read_text()).get('id')!=job['id']:raise Problem('Project ownership marker does not match this job.')
+            for source in job['request']['files']:
+                original=(destination/'originals'/source['path']).resolve()
+                if not original.is_relative_to(destination) or not original.is_file() or sha(original)!=source['sha256']:
+                    raise Problem('An original is missing or changed; preserve the workspace and investigate before replacement.')
+            prompt,base,skill=render_worker_prompt(job,continuation=True)
+            artifacts=_artifact(s,ticket);artifacts.mkdir(parents=True,exist_ok=True)
+            (artifacts/'START_PROMPT.txt').write_text(prompt);(artifacts/'SKILL.md').write_bytes(skill.read_bytes())
+            atomic_json(artifacts/'provenance.json',{'basePromptSha256':sha(base),'skillSha256':sha(skill),'promptSha256':sha(artifacts/'START_PROMPT.txt'),'createdAt':now()})
+            s.patch(job['id'],state='replacement_ready')
+            return _update(s,identifier,phase='replacement_ready')|{'promptPath':str(artifacts/'START_PROMPT.txt')}
+        if action=='launch':
+            if ticket['phase']!='replacement_ready':raise Problem('Do not repeat an uncertain replacement launch; reconcile T3 threads first.',409)
+            _retired(s,ticket['worker_thread']);_bounds(s,job['id'],ticket['policy'])
+            s.model_selection(job['request']['selection'])
+            decision=next((d for d in engine.plan(s)['decisions'] if d['jobId']==job['id']),None)
+            if not decision or not decision['admit']:raise Problem(decision['reason'] if decision else 'Replacement is not eligible.',409)
+            title=job['name']+' · '+identifier[:8]
+            spec={'title':title,'projectId':job['project_id'],'workspaceStrategy':{'type':'root'},
+                  'modelSelection':job['request']['selection'],'promptPath':str(_artifact(s,ticket)/'START_PROMPT.txt')}
+            at=now()
+            with s.connect() as c:
+                c.execute('BEGIN IMMEDIATE')
+                sample=c.execute("SELECT id FROM samples WHERE kind='quota' ORDER BY id DESC LIMIT 1").fetchone()
+                c.execute("INSERT OR REPLACE INTO metadata VALUES ('admission_sample',?)",(str(sample[0]),))
+                c.execute("UPDATE jobs SET state='replacement_launching',updated=? WHERE id=?",(at,job['id']))
+                c.execute("UPDATE recoveries SET phase='launching',updated=?,result=? WHERE id=?",(at,json.dumps({'launchIntent':spec,'launchIntentAt':at}),identifier))
+                c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',(job['id'],at,'replacement_launch_reserved',json.dumps({'recoveryId':identifier,'title':title})))
+            return spec
+        if action=='record':
+            tid=payload.get('threadId')
+            if ticket['phase']=='replaced':
+                if tid!=ticket['replacement_thread']:raise Problem('This recovery already has a different replacement.')
+                return ticket
+            if ticket['phase'] not in ('launching','attention') or not isinstance(tid,str) or not tid:raise Problem('A replacement launch result is required.')
+            if tid==ticket['worker_thread']:raise Problem('A replacement launch cannot point to the retired worker.',409)
+            if ticket['replacement_thread'] and ticket['replacement_thread']!=tid:raise Problem('Never bind a second candidate to an uncertain launch.',409)
+            _update(s,identifier,replacement_thread=tid,result=payload)
+            selection=payload.get('modelSelection') or {};options=selection.get('options') or {}
+            if isinstance(options,list):options={x['id']:x['value'] for x in options}
+            requested=job['request']['selection']
+            if payload.get('projectId')!=job['project_id'] or selection.get('instanceId')!=requested['instanceId'] or selection.get('model')!=requested['model'] or options!=requested['options']:
+                _update(s,identifier,phase='attention',error='Returned replacement settings mismatch; retained its ID. Do not launch again.')
+                s.patch(job['id'],state='attention',error='Replacement model/settings mismatch; reconcile the saved candidate.')
+                raise Problem('Replacement settings mismatch; candidate saved for reconciliation.',409)
+            binding=engine.replace_worker(s,job['id'],tid,expected_old=ticket['worker_thread'],reason='Configured recovery rule '+rule['id'],_locked=True,_recovery_id=identifier)
+            s.patch(job['id'],launch_result={**payload,'optionsVerified':True})
+            result=_update(s,identifier,phase='replaced',error=None)
+            return result|{'watcher':binding['watcher']}
+        if action=='cancel':
+            if ticket.get('replacement_thread'):
+                _retired(s,ticket['replacement_thread'])
+            elif ticket['phase']=='launching':raise Problem('Reconcile the uncertain launch before cancelling recovery.',409)
+            if ticket['phase'] in CLOSED and ticket['phase']!='attention':raise Problem('This recovery is already closed.')
+            s.patch(job['id'],state='attention',error='Recovery cancelled; inspect the current thread before resuming.')
+            return _update(s,identifier,phase='cancelled')
+        raise Problem('Unknown recovery action.')
