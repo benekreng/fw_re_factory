@@ -5,14 +5,14 @@ import json
 import shutil
 import uuid
 
-from app import Problem, now
+from app import Problem, now, subagent_settings
 import engine
 
 EDITABLE = {'queued', 'preparing', 'prepared'}
 
 
 def revision(request):
-    value = {k: request.get(k) for k in ('selection', 'quotaPool', 'modelGeneration')}
+    value = {k: request.get(k) for k in ('selection', 'quotaPool', 'subagents', 'subagentCap', 'modelGeneration')}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -55,15 +55,19 @@ def update_model(store, identifier, payload):
     with engine.lock(store):
         job = store.job(identifier)
         if job['state'] not in EDITABLE or job.get('thread_id'):
-            raise Problem('Model settings can only change before a job begins launching.', 409)
+            raise Problem('Worker settings can only change before a job begins launching.', 409)
         if payload.get('expectedRevision') != revision(job['request']):
             raise Problem('This job’s settings changed elsewhere. Reload its saved settings.', 409)
-        selection = store.model_selection(payload.get('selection'))
-        pool = payload.get('quotaPool')
+        old = job['request']
+        chosen = payload.get('selection', old['selection'])
+        selection = old['selection'] if chosen == old['selection'] else store.model_selection(chosen)
+        pool = payload.get('quotaPool', old.get('quotaPool'))
+        policy, cap = subagent_settings(payload.get('subagents', old.get('subagents', 'none')),
+                                       payload.get('subagentCap', old.get('subagentCap', 0)))
         if pool not in ('claude', 'codex'):
             raise Problem('Choose the actual quota pool: claude or codex.')
-        old = job['request']
-        if selection == old['selection'] and pool == old.get('quotaPool'):
+        if (selection == old['selection'] and pool == old.get('quotaPool')
+                and policy == old.get('subagents', 'none') and cap == old.get('subagentCap', 0)):
             return job
         # Preserve prepared evidence before any later re-preparation overwrites it.
         artifacts = store.data / 'jobs' / identifier
@@ -73,7 +77,7 @@ def update_model(store, identifier, payload):
             for name in ('START_PROMPT.txt', 'SKILL.md', 'provenance.json'):
                 if (artifacts / name).is_file() and not (archive / name).exists():
                     shutil.copy2(artifacts / name, archive / name)
-        request = old | {'selection': selection, 'quotaPool': pool,
+        request = old | {'selection': selection, 'quotaPool': pool, 'subagents': policy, 'subagentCap': cap,
                          'modelGeneration': old.get('modelGeneration', 0) + 1}
         with store.connect() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -81,8 +85,8 @@ def update_model(store, identifier, payload):
                       (json.dumps(request), now(), identifier))
             c.execute('DELETE FROM launch_approvals WHERE job=?', (identifier,))
             c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',
-                      (identifier, now(), 'model_changed', json.dumps({
-                          'previous': {'selection': old['selection'], 'quotaPool': old.get('quotaPool')},
-                          'current': {'selection': selection, 'quotaPool': pool},
+                      (identifier, now(), 'worker_settings_changed', json.dumps({
+                          'previous': {k: old.get(k) for k in ('selection', 'quotaPool', 'subagents', 'subagentCap')},
+                          'current': {'selection': selection, 'quotaPool': pool, 'subagents': policy, 'subagentCap': cap},
                           'revision': revision(request), 'readmissionRequired': True})))
         return store.job(identifier)

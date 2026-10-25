@@ -30,6 +30,14 @@ def sha(path):
     return h.hexdigest()
 
 
+def subagent_settings(policy, cap):
+    if policy not in ('none', 'integration', 'capped') or type(cap) is not int or not 0 <= cap <= 8:
+        raise Problem('Invalid subagent policy or cap (0–8).')
+    if policy == 'capped' and cap < 1:
+        raise Problem('Allowed subagents require a concurrent limit from 1 to 8.')
+    return policy, cap if policy == 'capped' else 0
+
+
 class Problem(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
@@ -162,12 +170,7 @@ class Store:
             raise Problem('Each device group needs at least one firmware candidate.')
         if (self.projects / slug).exists():
             raise Problem('The destination already exists: ' + str(self.projects / slug), 409)
-        policy = group.get('subagents', 'none')
-        cap = group.get('subagentCap', 0)
-        if policy not in ('none', 'integration', 'capped') or type(cap) is not int or not 0 <= cap <= 8:
-            raise Problem('Invalid subagent policy or cap (0–8).')
-        if policy == 'capped' and cap < 1:
-            raise Problem('Capped subagents require a positive cap.')
+        policy, cap = subagent_settings(group.get('subagents', 'none'), group.get('subagentCap', 0))
         pool = group.get('quotaPool', 'claude' if selection['instanceId']=='claudeAgent' else 'codex')
         if pool not in ('claude','codex'):
             raise Problem('Choose the actual quota pool: claude or codex.')

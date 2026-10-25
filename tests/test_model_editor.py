@@ -33,7 +33,7 @@ class ModelCase(unittest.TestCase):
         self.assertNotEqual(changed['modelRevision'], job['modelRevision'])
         self.assertEqual(self.enqueue()['request'], expected)
         with self.s.connect() as c:
-            event = c.execute("SELECT detail FROM events WHERE kind='model_changed'").fetchone()
+            event = c.execute("SELECT detail FROM events WHERE kind='worker_settings_changed'").fetchone()
         self.assertEqual(json.loads(event[0])['previous']['selection'], job['request']['selection'])
 
     def test_stale_editor_and_aba_revision_rejected(self):
@@ -152,5 +152,92 @@ class ModelCase(unittest.TestCase):
             with patch.object(self.s, 'cli'):
                 client.request('POST', '/api/models/refresh', '{}', headers);r = client.getresponse()
                 self.assertEqual(r.status, 200);self.assertTrue(json.loads(r.read())['refreshPending'])
+            client.close()
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def test_subagent_edits_preserve_model_and_assignment_without_catalog(self):
+        job = self.enqueue()
+        (self.s.data/'capabilities.json').unlink()
+        changed = models.update_model(self.s, job['id'], {
+            'expectedRevision': job['modelRevision'], 'subagents': 'capped', 'subagentCap': 4})
+        expected = job['request'] | {'subagents': 'capped', 'subagentCap': 4, 'modelGeneration': 1}
+        self.assertEqual(changed['request'], expected)
+        self.assertEqual(self.enqueue()['request'], expected)
+        with self.s.connect() as c:
+            detail = json.loads(c.execute("SELECT detail FROM events WHERE kind='worker_settings_changed'").fetchone()[0])
+        self.assertEqual(detail['previous']['subagents'], 'none')
+        self.assertEqual(detail['current']['subagentCap'], 4)
+        disabled = models.update_model(self.s, job['id'], {
+            'expectedRevision': changed['modelRevision'], 'subagents': 'none'})
+        self.assertEqual(disabled['request']['subagentCap'], 0)
+        integration = models.update_model(self.s, job['id'], {
+            'expectedRevision': disabled['modelRevision'], 'subagents': 'integration'})
+        self.assertEqual(integration['request']['subagents'], 'integration')
+        self.assertEqual(integration['request']['subagentCap'], 0)
+
+    def test_subagent_policy_and_cap_validation_are_atomic(self):
+        job = self.enqueue()
+        for policy, cap in [('capped', 0), ('capped', -1), ('capped', 9), ('capped', True),
+                            ('capped', 1.5), ('capped', '2'), ('unlimited', 3), ('none', False)]:
+            with self.subTest(policy=policy, cap=cap):
+                with self.assertRaises(Problem):models.update_model(self.s, job['id'], {
+                    'expectedRevision': job['modelRevision'], 'subagents': policy, 'subagentCap': cap})
+                self.assertEqual(self.s.job(job['id'])['request'], job['request'])
+
+    def test_subagent_change_rebuilds_prepared_prompt_and_rejects_stale_launch(self):
+        job = self.enqueue();self.quota();claim(self.s, job['id']);prepare(self.s, job['id'])
+        self.s.patch(job['id'], project_id='project')
+        engine.request_launch(self.s, job['id'])
+        prompt = self.s.data/'jobs'/job['id']/'START_PROMPT.txt'
+        self.assertIn('NO subagents', prompt.read_text())
+        changed = models.update_model(self.s, job['id'], {
+            'expectedRevision': job['modelRevision'], 'subagents': 'capped', 'subagentCap': 5})
+        self.assertEqual(changed['state'], 'queued')
+        self.assertIsNone(engine.launch_approval(self.s, changed))
+        archive = prompt.parent/'model-history'/job['modelRevision']/'START_PROMPT.txt'
+        self.assertIn('NO subagents', archive.read_text())
+        self.quota();claim(self.s, job['id']);prepare(self.s, job['id'])
+        self.assertIn('at most 5 concurrent child agents', prompt.read_text())
+        self.assertNotIn('User subagent policy: NO subagents', prompt.read_text())
+        with self.assertRaisesRegex(Problem, 'settings changed'):
+            reserve_launch(self.s, job['id'], job['modelRevision'])
+        current = reserve_launch(self.s, job['id'], changed['modelRevision'])
+        with self.assertRaisesRegex(Problem, 'before a job begins launching'):
+            models.update_model(self.s, job['id'], {
+                'expectedRevision': current['modelRevision'], 'subagents': 'none', 'subagentCap': 0})
+
+    def test_subagent_limit_change_and_noop_preserve_optimistic_lock(self):
+        job = self.enqueue()
+        allowed = models.update_model(self.s, job['id'], {
+            'expectedRevision': job['modelRevision'], 'subagents': 'capped', 'subagentCap': 2})
+        limited = models.update_model(self.s, job['id'], {
+            'expectedRevision': allowed['modelRevision'], 'subagentCap': 7})
+        self.assertNotEqual(allowed['modelRevision'], limited['modelRevision'])
+        with self.assertRaisesRegex(Problem, 'changed elsewhere'):
+            models.update_model(self.s, job['id'], {
+                'expectedRevision': allowed['modelRevision'], 'subagents': 'none'})
+        engine.request_launch(self.s, job['id'])
+        same = models.update_model(self.s, job['id'], {
+            'expectedRevision': limited['modelRevision'], 'subagentCap': 7})
+        self.assertEqual(same['modelRevision'], limited['modelRevision'])
+        self.assertIsNotNone(engine.launch_approval(self.s, same))
+
+    def test_settings_http_route_enforces_origin_for_subagent_changes(self):
+        job = self.enqueue()
+        server = dashboard.make_server(self.s, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True);thread.start()
+        try:
+            client = http.client.HTTPConnection('127.0.0.1', server.server_port)
+            client.request('GET', '/api/status');r = client.getresponse();token = json.loads(r.read())['csrfToken']
+            headers = {'Content-Type': 'application/json', 'Origin': f'http://127.0.0.1:{server.server_port}', 'X-CSRF-Token': token}
+            path = '/api/jobs/'+job['id']+'/settings'
+            body = json.dumps({'expectedRevision': job['modelRevision'], 'subagents': 'capped', 'subagentCap': 3})
+            client.request('POST', path, body, headers | {'Origin': 'http://evil.example'})
+            r = client.getresponse();self.assertEqual(r.status, 403);r.read()
+            client.request('POST', path, body, headers);r = client.getresponse()
+            self.assertEqual(r.status, 200);result = json.loads(r.read())['job']
+            self.assertEqual(result['request']['subagentCap'], 3)
+            self.assertEqual(result['request']['selection'], job['request']['selection'])
+            client.request('POST', path, body, headers);r = client.getresponse();self.assertEqual(r.status, 409);r.read()
             client.close()
         finally:server.shutdown();server.server_close();thread.join()

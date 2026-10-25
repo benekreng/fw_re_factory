@@ -226,22 +226,28 @@ function drawModelOptions(saved={}){
   const value=Object.hasOwn(saved,d.id)?saved[d.id]:(d.currentValue??(d.type==='boolean'?false:d.options.find(o=>o.isDefault)?.id??d.options[0]?.id));
   return `<label>${esc(d.label)} ${d.type==='boolean'?`<input type="checkbox" data-model-option="${esc(d.id)}" ${value?'checked':''}>`:`<select data-model-option="${esc(d.id)}" required>${d.options.map(o=>`<option value="${esc(o.id)}" ${o.id===value?'selected':''}>${esc(o.label||o.id)}</option>`).join('')}</select>`}</label>`;
  }).join('');
- $('model-save').disabled=!selectedModel();
+ checkModelEditor();
 }
 function drawModels(saved){
  const models=selectedProvider()?.models||[];
  $('model-name').innerHTML=models.map(m=>`<option value="${esc(m.id)}">${esc(m.label||m.id)}</option>`).join('');
- if(saved)$('model-name').value=saved.model;
+ if(saved){
+  if(!models.some(m=>m.id===saved.model))$('model-name').insertAdjacentHTML('beforeend',`<option value="${esc(saved.model)}">${esc(saved.model)} (unavailable)</option>`);
+  $('model-name').value=saved.model;
+ }
  drawModelOptions(saved?.options);
 }
 function drawProviders(saved){
  $('model-provider').innerHTML=(modelCatalog?.providers||[]).map(p=>`<option value="${esc(p.providerInstanceId)}">${esc(p.displayName||p.providerInstanceId)}</option>`).join('');
- if(saved)$('model-provider').value=saved.instanceId;
+ if(saved){
+  if(!modelCatalog?.providers.some(p=>p.providerInstanceId===saved.instanceId))$('model-provider').insertAdjacentHTML('beforeend',`<option value="${esc(saved.instanceId)}">${esc(saved.instanceId)} (unavailable)</option>`);
+  $('model-provider').value=saved.instanceId;
+ }
  drawModels(saved);
 }
 async function modelPost(path,payload){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:JSON.stringify(payload)});
- const result=await response.json();if(!response.ok)throw new Error(result.error||'Model update failed.');return result;
+ const result=await response.json();if(!response.ok)throw new Error(result.error||'Worker settings update failed.');return result;
 }
 function showCatalogStatus(){
  if(!modelCatalog)return;
@@ -261,20 +267,24 @@ async function openModelEditor(id){
  if(modelSaving)return;
  const job=state.jobs.find(j=>j.id===id);if(!job?.modelEditable)return;
  modelEdit={id,revision:job.modelRevision};$('model-editor').hidden=false;
- $('model-editor-title').textContent='Worker model · '+job.name;
+ $('model-editor-title').textContent='Worker settings · '+job.name;
  $('model-status').textContent='Loading T3 models…';$('model-fields').disabled=true;
  try{
-  await loadModelCatalog();drawProviders(job.request.selection);$('model-pool').value=job.request.quotaPool;
-  $('model-status').textContent=selectedModel()?'': 'The saved provider or model is unavailable. Choose an available model or refresh the catalog.';
- }catch(error){$('model-status').textContent=error.message;}
+  $('worker-subagents').value=job.request.subagents;
+  $('worker-subagent-cap').value=job.request.subagentCap||1;
+  syncSubagentControls();
+  $('model-pool').value=job.request.quotaPool;
+  await loadModelCatalog();drawProviders(job.request.selection);
+  $('model-status').textContent=selectedModel()?'': 'The saved model is unavailable. Subagent edits keep it unchanged; choose an available model or refresh to change the model.';
+ }catch(error){drawProviders(job.request.selection);$('model-status').textContent=error.message+' The saved model is retained; subagent settings can still be changed.';}
  finally{$('model-fields').disabled=false;checkModelEditor();}
 }
 function checkModelEditor(){
  if(!modelEdit||modelSaving)return;
  const job=state.jobs.find(j=>j.id===modelEdit.id);
  const locked=!job?.modelEditable;
- $('model-save').disabled=locked||job.modelRevision!==modelEdit.revision||!selectedModel();
- if(locked)$('model-status').textContent='This job has begun launching. Model editing is closed.';
+ $('model-save').disabled=locked||job.modelRevision!==modelEdit.revision;
+ if(locked)$('model-status').textContent='This job has begun launching. Worker settings editing is closed.';
  else if(job.modelRevision!==modelEdit.revision)$('model-status').textContent='Saved settings changed elsewhere. Your draft is retained; reload saved settings before saving.';
 }
 $('jobs').addEventListener('click',e=>{const button=e.target.closest('[data-edit-model]');if(button)openModelEditor(button.dataset.editModel);});
@@ -292,14 +302,28 @@ $('model-refresh').addEventListener('click',async()=>{
 });
 $('model-form').addEventListener('submit',async e=>{
  e.preventDefault();if(modelSaving||!modelEdit)return;
- const model=selectedModel();if(!model)return;
+ const model=selectedModel();
+ const saved=state.jobs.find(j=>j.id===modelEdit.id)?.request.selection;
+ if(!model&&($('model-provider').value!==saved?.instanceId||$('model-name').value!==saved?.model)){
+  $('model-status').textContent='The chosen model is unavailable. Reload saved settings or choose an available model.';return;
+ }
  const options={};for(const input of $('model-options').querySelectorAll('[data-model-option]'))options[input.dataset.modelOption]=input.type==='checkbox'?input.checked:input.value;
- const payload={expectedRevision:modelEdit.revision,selection:{instanceId:$('model-provider').value,model:model.id,options},quotaPool:$('model-pool').value};
+ const payload={expectedRevision:modelEdit.revision,quotaPool:$('model-pool').value,subagents:$('worker-subagents').value,subagentCap:$('worker-subagents').value==='capped'?Number($('worker-subagent-cap').value):0};
+ if(model)payload.selection={instanceId:$('model-provider').value,model:model.id,options};
  modelSaving=true;$('model-fields').disabled=true;
  try{
-  const result=await modelPost('/api/jobs/'+modelEdit.id+'/model',payload);
+  const result=await modelPost('/api/jobs/'+modelEdit.id+'/settings',payload);
   modelEdit=null;$('model-editor').hidden=true;await refresh();
-  $('action-status').textContent=result.job.modelRevision===payload.expectedRevision?'Worker model unchanged.':'Worker model saved. Fresh admission checks are required.'+(state.plan.launchMode==='manual'?' Click Launch to approve this model.':'');
+  $('action-status').textContent=result.job.modelRevision===payload.expectedRevision?'Worker settings unchanged.':'Worker settings saved. Fresh admission checks are required.'+(state.plan.launchMode==='manual'?' Click Launch to approve these settings.':'');
  }catch(error){$('model-status').textContent=error.message+' Your draft has been retained.';}
  finally{modelSaving=false;$('model-fields').disabled=false;}
 });
+
+function syncSubagentControls(){
+ const policy=$('worker-subagents').value;
+ const capped=policy==='capped';
+ $('worker-subagent-limit').hidden=!capped;
+ $('worker-subagent-cap').disabled=!capped;
+ $('worker-subagent-note').textContent=policy==='none'?'The worker performs all work itself.':capped?'The limit includes nested subagents across the entire worker’s delegation tree.':'Only one fresh agent at a time, solely for integration checks.';
+}
+$('worker-subagents').addEventListener('change',syncSubagentControls);

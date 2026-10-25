@@ -133,7 +133,7 @@ def reserve_launch(store, identifier, expected_revision):
     if not isinstance(expected_revision, str):
         raise Problem('Pass the prepared job’s current modelRevision after its job ID.', 409)
     if expected_revision != revision(job['request']):
-        raise Problem('Model settings changed. Reload the job and repeat admission/preparation before launching.', 409)
+        raise Problem('Worker settings changed. Reload the job and repeat admission/preparation before launching.', 409)
     if job['state'] != 'prepared' or not job['project_id'] or job['thread_id']:
         raise Problem('Only a prepared job with its project recorded can start a launch.', 409)
     store.model_selection(job['request']['selection'])

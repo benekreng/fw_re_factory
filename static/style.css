@@ -147,3 +147,6 @@ textarea { display: block; width: 100%; margin-top: 5px; min-height: 76px; resiz
 .profile button { font-size: 11px; padding: 2px 6px; margin-left: 6px; }
 #model-catalog-status { margin-right: 8px; }
 @media (max-width: 650px) { .model-options { align-items: flex-start; flex-direction: column; } }
+
+.subagent-options { margin-top: 16px; }
+#worker-subagent-cap { width: 70px; }

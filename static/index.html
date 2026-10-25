@@ -40,8 +40,8 @@
       </select></label>
     </div>
     <div id="jobs"></div>
-    <section id="model-editor" hidden aria-label="Edit queued worker model">
-      <h3 id="model-editor-title">Worker model</h3>
+    <section id="model-editor" hidden aria-label="Edit queued worker settings">
+      <h3 id="model-editor-title">Worker settings</h3>
       <p class="note">Changes apply before launch. Saving returns the job to the queue for fresh admission checks and clears its previous Launch approval.</p>
       <form id="model-form">
         <fieldset id="model-fields">
@@ -52,7 +52,12 @@
             <label>Quota pool <select id="model-pool"><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
           </div>
           <p class="note">Choose the quota pool charged by your provider or proxy route.</p>
-          <div class="policy-actions"><button type="submit" id="model-save">Save model</button><button type="button" id="model-cancel">Cancel</button><button type="button" id="model-reload">Reload saved settings</button></div>
+          <div class="model-options subagent-options">
+            <label>Subagents <select id="worker-subagents"><option value="none">Not allowed</option><option value="capped">Allowed with limit</option><option value="integration">Integration checks only</option></select></label>
+            <label id="worker-subagent-limit" hidden>Maximum concurrent subagents <input id="worker-subagent-cap" type="number" min="1" max="8" step="1" value="1" required disabled></label>
+          </div>
+          <p class="note" id="worker-subagent-note"></p>
+          <div class="policy-actions"><button type="submit" id="model-save">Save settings</button><button type="button" id="model-cancel">Cancel</button><button type="button" id="model-reload">Reload saved settings</button></div>
         </fieldset>
       </form>
       <p class="note"><span id="model-catalog-status"></span> <button type="button" id="model-refresh">Refresh models from T3</button></p>
