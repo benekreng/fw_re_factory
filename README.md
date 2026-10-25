@@ -17,7 +17,33 @@ The launcher currently reads these files from `/home/vesper/RE/bens_skills/firmw
 
 The factory lives at `/home/vesper/fw_re_factory`. The installed `re-launch` command and existing `firmware-watch-*` service names remain the operational entry points. `/home/vesper/firmware-re-launcher` is a compatibility symlink for previously saved instruction paths.
 
-## Use
+## How to use
+
+### Ask an agent to use the CLI
+
+Paste this into an agent chat on the machine where the factory is installed, then fill in the firmware paths and requested settings:
+
+```text
+Use the fw_re_factory CLI on this machine.
+
+Project: /home/vesper/fw_re_factory
+Command: re-launch
+
+Read README.md and docs/PROMPTS_AND_WORKFLOW.md in that project.
+Run `re-launch --help` and the relevant subcommand's `--help`
+before using it.
+
+Use `re-launch enqueue REQUEST.json` for noninteractive submissions.
+Use the existing watcher and preserve the saved queue/history.
+Keep my current pause settings unless I explicitly change them.
+
+Firmware and requested run settings:
+[Insert paths, device names, model/settings and subagent policy]
+```
+
+An agent submitting jobs uses the CLI; an agent acting as the watcher must also read [CONTROLLER.md](CONTROLLER.md) and follow its ownership checks and launch/review procedure. Submitting another job reuses the registered watcher. If watcher messages are paused, submission does not resume them.
+
+### Run the CLI yourself
 
 ```bash
 re-launch                         # interactive queue wizard
