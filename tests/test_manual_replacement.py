@@ -153,6 +153,7 @@ class ManualReplacementCase(unittest.TestCase):
         with patch.object(self.s,'cli',side_effect=self.cli):done=self.call('record',ticket['id'],self.result())
         self.assertEqual(done['phase'],'replaced');self.assertEqual(self.s.job(self.j['id'])['thread_id'],self.new)
         self.assertNotIn('lastNudge',self.s.job(self.j['id'])['observation'])
+
         self.assertEqual(self.call('record',ticket['id'],self.result())['phase'],'replaced')
         self.assertEqual(manual.pending(self.s),[])
         self.enable('replace');policy=recovery.policy(self.s)|{'maxReplacementsPerJob':1,'cooldownSeconds':9999}
@@ -161,6 +162,14 @@ class ManualReplacementCase(unittest.TestCase):
         next_ticket=manual.request(self.s,self.j['id'],self.new)
         self.assertNotEqual(next_ticket['id'],ticket['id'])
         self.assertEqual(next_ticket['phase'],'retire_pending')
+
+    def test_manual_queue_mode_replacement_has_no_worker_count_limit(self):
+        ticket=self.ready();self.quota(1)
+        atomic_json(self.s.data/'config.json',self.s.config()|{'launchMode':'manual','maxParallel':1})
+        self.payload['requestId']=str(uuid.uuid4());self.payload['groups'][0]['slug']='another'
+        other=self.enqueue();self.s.patch(other['id'],state='running',thread_id='other-worker')
+        with patch.object(self.s,'cli',side_effect=self.cli):self.call('launch',ticket['id'])
+        self.assertEqual(recovery.get(self.s,ticket['id'])['phase'],'launching')
 
     def test_notifications_are_immediate_deduplicated_and_readdressed_on_handover(self):
         atomic_json(self.s.data/'config.json',self.s.config()|{'watcherMessagesPaused':True})

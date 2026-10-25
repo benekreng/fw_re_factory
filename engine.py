@@ -476,6 +476,7 @@ def forecast(s):
 
 def plan(s):
     config=s.config(); jobs=s.jobs(); active=[j for j in jobs if j['state'] in SLOTS]
+    manual=config.get('launchMode','manual')=='manual'
     queued=sorted((j for j in jobs if j['state']=='queued'),key=lambda j:j['created'])
     resumes=sorted((j for j in jobs if j['state']=='usage_limited' or (j['state']=='waiting' and ((j.get('observation') or {}).get('checkpointPaused') or (j.get('observation') or {}).get('operatorResumeRequested')))),key=lambda j:j['created'])
     replacements=sorted((j for j in jobs if j['state']=='replacement_ready'),key=lambda j:j['created'])
@@ -497,7 +498,7 @@ def plan(s):
             families=[x for x in ('opus','sonnet','haiku') if x in scope]
             return not families or any(x in job['request']['selection']['model'].lower() for x in families)
         reason=None
-        if config.get('launchMode','manual')=='manual' and job['state']=='queued' and not launch_approval(s,job):
+        if manual and job['state']=='queued' and not launch_approval(s,job):
             reason='Manual mode: waiting for you to click Launch in the dashboard.'
         elif config.get('schedulingPaused'):reason='Scheduling is paused by the user; monitoring continues.'
         elif not fresh:reason='Usage is missing or stale; sample before admission.'
@@ -505,9 +506,10 @@ def plan(s):
         elif not accounts:reason='No enabled account in the selected quota pool.'
         elif any(a['errors'] or not a['windows'] for a in accounts):reason='Account usage is incomplete; routing is not verified.'
         elif any(w['used']>=98 for a in accounts for w in a['windows'] if w['active'] and applies(w)):reason='An enabled account is at its limit; rotation is not verified.'
-        elif sample_used or available<=0:reason='Concurrency limit reached or this quota sample already admitted a job.'
-        elif len(others)>=job['request']['maxParallel']:reason='This batch concurrency limit is reached.'
-        else:
+        elif not manual and available<=0 and not sample_used:reason='Automatic worker concurrency limit reached.'
+        elif not manual and sample_used:reason='Automatic mode already admitted a job from this quota sample; waiting for the next sample.'
+        elif not manual and len(others)>=job['request']['maxParallel']:reason='This batch concurrency limit is reached.'
+        elif not manual:
             relevant=[f for f in predictions if f['provider']==pool and f['active'] and applies(f)]
             if config.get('policy','short-window')=='short-window':
                 shorter=[f for f in relevant if f['seconds'] is None or f['seconds']<=86400]
@@ -536,8 +538,9 @@ def plan(s):
         admit=reason is None
         decisions.append({'jobId':job['id'],'name':job['name'],'admit':admit,
                           'action':'replace' if job['state']=='replacement_ready' else 'launch' if job['state']=='queued' else 'resume',
-                          'reason':reason or 'Start one approved job to measure incremental demand; reassess before the next addition.'})
-        if admit:
+                          'reason':reason or ('Manual launch authorized; no worker-count limit or forecast throttle applies.' if manual
+                                             else 'Start one approved job to measure incremental demand; reassess before the next addition.')})
+        if admit and not manual:
             capacity=0  # Deliberately add at most one job per sampling cycle.
             sample_used=True
     recommendations=[]
@@ -568,7 +571,8 @@ def plan(s):
             if expiry and 0<expiry-time.time()<86400 and (g.get('resets_left',1) or 0)>0:
                 recommendations.append({'account':a['account'],'action':'Consider reset voucher before expiry; user redemption required.','expires':iso(expiry)})
     return {'time':now(),'launchMode':config.get('launchMode','manual'),'policy':config.get('policy','short-window'),'active':len(active),'queued':len(queued),
-            'maxParallel':config.get('maxParallel',2),'quotaFresh':bool(fresh),'decisions':decisions,
+            'maxParallel':None if manual else config.get('maxParallel',2),'automaticMaxParallel':config.get('maxParallel',2),
+            'quotaFresh':bool(fresh),'decisions':decisions,
             'rotation':'unverified; no account mutations','vouchers':'recommendations only; no redemption','recommendations':recommendations,'checkpointRequests':pause_requests}
 
 

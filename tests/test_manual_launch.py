@@ -1,4 +1,5 @@
 import http.client
+import datetime as dt
 import json
 import threading
 import unittest
@@ -55,6 +56,63 @@ class ManualCase(unittest.TestCase):
         self.manual();job=self.enqueue()
         self.s.patch(job['id'],state='usage_limited',thread_id='existing-worker');self.quota(1)
         self.assertEqual(claim(self.s,job['id'],resume=True)['state'],'running')
+
+    def test_manual_launches_bypass_global_batch_and_sample_limits(self):
+        self.manual()
+        atomic_json(self.s.data/'config.json',self.s.config()|{'maxParallel':1})
+        self.payload['maxParallel']=1
+        jobs=[]
+        for i in range(5):
+            self.payload['requestId']=str(uuid.uuid4());self.payload['groups'][0]['slug']='manual-'+str(i)
+            jobs.append(self.enqueue())
+        self.quota(10)
+        for job in jobs[:-1]:engine.request_launch(self.s,job['id'])
+        decisions={d['jobId']:d for d in engine.plan(self.s)['decisions']}
+        self.assertTrue(all(decisions[j['id']]['admit'] for j in jobs[:-1]))
+        self.assertFalse(decisions[jobs[-1]['id']]['admit'])
+        for i,job in enumerate(jobs[:-1]):
+            self.assertEqual(claim(self.s,job['id'])['state'],'preparing')
+            self.s.patch(job['id'],state='running',thread_id='manual-worker-'+str(i))
+        self.assertEqual(engine.plan(self.s)['active'],4)
+        self.assertIsNone(engine.plan(self.s)['maxParallel'])
+        self.assertEqual(engine.plan(self.s)['automaticMaxParallel'],1)
+        with self.assertRaisesRegex(Problem,'Manual mode'):claim(self.s,jobs[-1]['id'])
+        with self.assertRaises(Problem):claim(self.s,jobs[0]['id'])
+
+    def test_manual_resume_does_not_apply_worker_count_cap(self):
+        self.manual()
+        atomic_json(self.s.data/'config.json',self.s.config()|{'maxParallel':1})
+        self.payload['maxParallel']=1
+        active=self.enqueue();self.s.patch(active['id'],state='running',thread_id='active-worker')
+        self.payload['requestId']=str(uuid.uuid4());self.payload['groups'][0]['slug']='limited-worker'
+        limited=self.enqueue();self.s.patch(limited['id'],state='usage_limited',thread_id='limited-worker')
+        self.quota(1)
+        self.assertEqual(claim(self.s,limited['id'],resume=True)['state'],'running')
+
+    def test_manual_launch_ignores_demand_forecast_but_automatic_keeps_it(self):
+        self.manual();active=self.enqueue()
+        self.s.patch(active['id'],state='running',thread_id='active-worker')
+        self.payload['requestId']=str(uuid.uuid4());self.payload['groups'][0]['slug']='additional'
+        job=self.enqueue();engine.request_launch(self.s,job['id'])
+        current=dt.datetime.now(dt.timezone.utc);reset=(current+dt.timedelta(hours=3)).isoformat()
+        for minutes,used in ((-20,40),(-15,50),(-10,60),(-5,70),(0,80)):
+            self.quota(used,(current+dt.timedelta(minutes=minutes)).isoformat(),reset)
+        self.assertTrue(engine.plan(self.s)['decisions'][0]['admit'])
+        engine.set_launch_mode(self.s,'automatic')
+        decision=engine.plan(self.s)['decisions'][0]
+        self.assertFalse(decision['admit']);self.assertIn('exhaust',decision['reason'])
+
+    def test_switch_to_automatic_restores_worker_limit_without_stopping_workers(self):
+        self.manual()
+        atomic_json(self.s.data/'config.json',self.s.config()|{'maxParallel':1})
+        first=self.enqueue();self.s.patch(first['id'],state='running',thread_id='active-worker')
+        self.payload['requestId']=str(uuid.uuid4());self.payload['groups'][0]['slug']='pending'
+        second=self.enqueue();engine.request_launch(self.s,second['id']);self.quota(1)
+        self.assertTrue(engine.plan(self.s)['decisions'][0]['admit'])
+        engine.set_launch_mode(self.s,'automatic')
+        with self.assertRaisesRegex(Problem,'concurrency limit'):claim(self.s,second['id'])
+        self.assertEqual(self.s.job(first['id'])['state'],'running')
+        self.assertIsNotNone(engine.launch_approval(self.s,second))
 
     def test_explicit_launch_wakes_once_while_periodic_messages_stay_paused(self):
         self.manual();job=self.enqueue();engine.request_launch(self.s,job['id'])

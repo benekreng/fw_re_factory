@@ -38,7 +38,7 @@ def claim(store, identifier, resume=False):
         if job['state'] not in (('waiting','usage_limited') if resume else ('queued',)):
             raise Problem('Already claimed; reconcile its saved state instead of launching twice.',409)
         active = c.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('stop_requested','preparing','prepared','launching','running','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching')").fetchone()[0]
-        if active >= job['request']['maxParallel']:
+        if store.config().get('launchMode','manual')!='manual' and active >= job['request']['maxParallel']:
             raise Problem('Concurrency limit reached; leave this job queued.',409)
         c.execute('UPDATE jobs SET state=?,updated=? WHERE id=?',('running' if resume else 'preparing',now(),identifier))
         sample=c.execute("SELECT id FROM samples WHERE kind='quota' ORDER BY id DESC LIMIT 1").fetchone()

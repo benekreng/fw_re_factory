@@ -149,7 +149,7 @@ The dashboard’s **Replace thread** explicitly requests this continuation workf
 
 Stop is a durable controller decision followed by a native T3 action. The dashboard immediately saves stop_requested and blocks worker mutations, automatic resumes and recovery replacements. It invalidates prior watcher decisions and notifies the current watcher, including when periodic messages are paused. A busy or usage-limited watcher handles the interruption when it can run. The interface keeps showing Stop requested until T3 confirms an idle worker and empty queue. The watcher also checks/stops explicitly owned delegated work. A stopped job stays stopped across resets, daemon restarts and watcher handovers; it releases its capacity slot only after confirmation.
 
-Resume is an explicit operator request to continue the same worker thread. It waits for ordinary quota/concurrency admission, uses an idempotent native delivery, and does not change manual/automatic launch mode. The saved model/subagent settings and project files remain attached to that job. The worker receives no new system prompt merely because the user clicked Stop. The stopped hold cannot be cleared by a generic watcher observation or completion claim.
+Resume is an explicit operator request to continue the same worker thread. It waits for quota admission, with concurrency and forecast throttles only in automatic mode, uses an idempotent native delivery, and does not change manual/automatic launch mode. The saved model/subagent settings and project files remain attached to that job. The worker receives no new system prompt merely because the user clicked Stop. The stopped hold cannot be cleared by a generic watcher observation or completion claim.
 
 ## Watcher prompt
 
@@ -250,7 +250,8 @@ Do not invent devices or add firmware beyond the approved files.
   the complete prepared START_PROMPT as the message.
 - Retain and validate the returned thread ID and launch result.
 - Reconcile uncertain launches before retrying.
-- Admit at most one new job per quota sample.
+- Manual mode has no worker-count, forecast/calibration or per-sample admission cap; start only operator-approved queued jobs. Actual usage limits, freshness and scheduling pause still apply.
+- In automatic mode, admit at most one new job per quota sample and honor concurrency and forecast guards.
 ```
 
 The prepared prompt, skill snapshot and provenance live under `data/jobs/<job-id>/`. Historical snapshots remain unchanged when the canonical task template is edited. New preparation uses the current template. Automatic replacements save their own prompt artifacts under the job's `recoveries/<recovery-id>/` directory.
@@ -312,7 +313,7 @@ A matching incident is persisted before repair or launch actions. Bounded repair
 ## How a run works from your point of view
 
 1. **Submit work.** Run `re-launch`, select firmware and options, review the concrete request, and submit it. The controller saves the approved queue. The first request can bootstrap the watcher; later requests reuse it.
-2. **Choose when to launch.** In manual mode (the default), open the dashboard and click Launch for the chosen job; other jobs stay unapproved. In automatic mode, eligible queued jobs can start without a click. Both modes preserve quota and concurrency checks. **Wait for admission.** The daemon samples usage and wakes an idle watcher when permitted. The controller's plan explains whether a queued job can start. The watcher consumes that decision and creates the device project and worker through T3.
+2. **Choose when to launch.** In manual mode (the default), open the dashboard and click Launch for each chosen job; other jobs stay unapproved. There is no worker-count limit or forecast/per-sample throttle in manual mode. In automatic mode, eligible queued jobs can start without a click, subject to concurrency, per-sample and forecast guards. Both modes preserve actual quota, freshness and scheduling-pause checks. **Wait for admission.** The daemon samples usage and wakes an idle watcher when permitted. The controller's plan explains whether a queued job can start. The watcher consumes that decision and creates the device project and worker through T3.
 3. **Let workers run.** Workers do the RE. The watcher reads progress directly and intervenes when an agent stopped with authorized work remaining. Routine checks stay short; full source review waits for relevant evidence.
 4. **Adjust concurrency using measurements.** The controller estimates percentage-point depletion per hour, time to exhaustion, and demand by active worker profile. Forecasts inform whether to add another worker. It requires calibration before expanding concurrency, respects hard limits and concurrency caps, and treats missing data as a hold. Different model/settings/subagent mixes need new measurements.
 5. **Handle limits and resets.** The watcher retries limited workers in the same conversations after recovery evidence. The default `short-window` policy prioritizes Claude's five-hour window where available, while still blocking hard weekly exhaustion. `weekly-first` and `balanced` are alternatives. Other account activity affects the estimates, so exact depletion at reset is not guaranteed.

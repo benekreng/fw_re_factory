@@ -207,7 +207,7 @@ function renderHostUsage(){
 }
 
 function render(data){
- state=data;$('launch-mode').value=data.plan.launchMode;$('launch-mode-note').textContent=data.plan.launchMode==='manual'?'Click Launch to approve each new worker.':'Queued jobs start when usage and capacity allow.';$('error').hidden=true;$('sync').textContent='Updated '+new Date(data.time).toLocaleTimeString();
+ state=data;$('launch-mode').value=data.plan.launchMode;$('launch-mode-note').textContent=data.plan.launchMode==='manual'?'Click Launch for each worker. No worker-count limit; usage checks still apply.':'Queued jobs start when usage and capacity allow.';$('error').hidden=true;$('sync').textContent='Updated '+new Date(data.time).toLocaleTimeString();
  const stats=[['active',data.jobs.filter(j=>active.has(j.state)).length],['queued',data.plan.queued],['completed',data.jobs.filter(j=>j.state==='verified_complete').length],['need attention',data.jobs.filter(j=>['attention','incomplete','usage_limited'].includes(j.state)).length]];
  $('stats').innerHTML=stats.map(([name,count])=>`<span><strong>${count}</strong> ${name}</span>`).join('');
  $('watch-state').textContent=data.config.watcherMessagesPaused?'messages paused':label(data.watcher.phase);
@@ -215,7 +215,7 @@ function render(data){
  $('policy').textContent=label(data.plan.policy);
  const next=data.plan.decisions.find(d=>d.admit)||data.plan.decisions[0];
  $('admission').innerHTML=next?`<p>${esc(next.name)} ${pill(next.admit?'eligible to start':'hold',next.admit?'':'warn')}</p><p class="muted">${esc(next.reason)}</p>`:empty('No pending launch decisions','Add firmware groups with re-launch.');
- $('admission').innerHTML+=`<p class="note">Usage ${data.plan.quotaFresh?'fresh':'missing or stale'}. Maximum ${Number(data.plan.maxParallel)} concurrent workers.</p>`;
+ $('admission').innerHTML+=`<p class="note">Usage ${data.plan.quotaFresh?'fresh':'missing or stale'}. ${data.plan.launchMode==='manual'?'Manual mode has no worker-count limit.':`Maximum ${Number(data.plan.maxParallel)} concurrent workers.`}</p>`;
  renderJobs();checkModelEditor();renderAccounts();renderChart();renderTokens();renderHostUsage();renderRecoveryEditor();
  $('recovery-state').textContent=data.recoveryPolicy?.enabled?'enabled':'disabled';
  $('recoveries').innerHTML=data.recoveries?.length?data.recoveries.slice(0,12).map(r=>`<div class="review"><strong>${esc(data.jobs.find(j=>j.id===r.job)?.name||r.job)}</strong> ${pill(r.phase,['attention','launching'].includes(r.phase)?'warn':'neutral')}<p>Rule: ${esc(r.rule_id)} · repair attempts: ${Number(r.repair_attempts)} · ${esc(time(r.updated))}</p>${r.error?`<p class="warn-text">${esc(r.error)}</p>`:''}</div>`).join(''):empty('No thread recovery incidents',data.recoveryPolicy?.enabled?'The watcher uses your saved criteria and bounded repair procedure.':'Waiting for your broken-thread criteria and repair instructions.');
