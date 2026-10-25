@@ -481,6 +481,7 @@ def forecast(s):
 
 
 def plan(s):
+    import usage_retry
     config=s.config(); jobs=s.jobs(); active=[j for j in jobs if j['state'] in SLOTS]
     manual=config.get('launchMode','manual')=='manual'
     queued=sorted((j for j in jobs if j['state']=='queued'),key=lambda j:j['created'])
@@ -492,7 +493,6 @@ def plan(s):
         used=c.execute("SELECT value FROM metadata WHERE key='admission_sample'").fetchone()
         sample=c.execute("SELECT id FROM samples WHERE kind='quota' ORDER BY id DESC LIMIT 1").fetchone()
     sample_used=bool(used and sample and used[0]==str(sample[0]))
-    if sample_used:capacity=0
     fresh=current and bool(current.get('accounts')) and 0<=time.time()-stamp(current['time'])<config.get('quotaFreshSeconds',600)
     for job in replacements+resumes+queued:
         others=[a for a in active if a['id']!=job['id']] if job['state']=='replacement_ready' else active
@@ -503,21 +503,30 @@ def plan(s):
             scope=w.get('scope','all').lower()
             families=[x for x in ('opus','sonnet','haiku') if x in scope]
             return not families or any(x in job['request']['selection']['model'].lower() for x in families)
+        retry=usage_retry.policy(s,job)
+        quota_reason=None
+        if not fresh:quota_reason='Usage is missing or stale; sample before admission.'
+        elif not accounts:quota_reason='No enabled account in the selected quota pool.'
+        elif any(a['errors'] or not a['windows'] for a in accounts):quota_reason='Account usage is incomplete; routing is not verified.'
+        elif any(not 0<=time.time()-(stamp(a.get('checkedAt')) or stamp(current['time']))<config.get('quotaFreshSeconds',600) for a in accounts):
+            quota_reason='Account usage is stale; wait for a fresh provider sample.'
+        elif any(w['used']>=98 for a in accounts for w in a['windows'] if w['active'] and applies(w)):
+            quota_reason='An enabled account is at its limit; rotation is not verified.'
+        disabled_pool=[a for a in (current or {}).get('accounts',[]) if a['provider']==pool]
+        disabled_pool=bool(disabled_pool) and all(a['disabled'] for a in disabled_pool)
+        probe=bool(retry['confirmed'] and quota_reason and time.time()>=(stamp(retry['retryAt']) or 0)
+                   and quota_reason!='No enabled account in the selected quota pool.' and not disabled_pool)
         reason=None
         if manual and job['state']=='queued' and not launch_approval(s,job):
             reason='Manual mode: waiting for you to click Launch in the dashboard.'
         elif config.get('schedulingPaused'):reason='Scheduling is paused by the user; monitoring continues.'
-        elif not fresh:reason='Usage is missing or stale; sample before admission.'
         elif (stamp((job.get('observation') or {}).get('resetAt')) or 0)>time.time():reason='The worker reported a future usage reset; wait until that boundary.'
-        elif not accounts:reason='No enabled account in the selected quota pool.'
-        elif any(a['errors'] or not a['windows'] for a in accounts):reason='Account usage is incomplete; routing is not verified.'
-        elif any(not 0<=time.time()-(stamp(a.get('checkedAt')) or stamp(current['time']))<config.get('quotaFreshSeconds',600) for a in accounts):
-            reason='Account usage is stale; wait for a fresh provider sample.'
-        elif any(w['used']>=98 for a in accounts for w in a['windows'] if w['active'] and applies(w)):reason='An enabled account is at its limit; rotation is not verified.'
-        elif not manual and available<=0 and not sample_used:reason='Automatic worker concurrency limit reached.'
-        elif not manual and sample_used:reason='Automatic mode already admitted a job from this quota sample; waiting for the next sample.'
+        elif retry['confirmed'] and (stamp(retry['cooldownUntil']) or 0)>time.time():reason='Usage retry cooldown; wait before another same-thread attempt.'
+        elif quota_reason and not probe:reason=quota_reason
+        elif not manual and available<=0:reason='Automatic worker concurrency limit reached.'
+        elif not manual and sample_used and not probe:reason='Automatic mode already admitted a job from this quota sample; waiting for the next sample.'
         elif not manual and len(others)>=job['request']['maxParallel']:reason='This batch concurrency limit is reached.'
-        elif not manual:
+        elif not manual and not probe:
             relevant=[f for f in predictions if f['provider']==pool and f['active'] and applies(f)]
             if config.get('policy','short-window')=='short-window':
                 shorter=[f for f in relevant if f['seconds'] is None or f['seconds']<=86400]
@@ -546,7 +555,10 @@ def plan(s):
         admit=reason is None
         decisions.append({'jobId':job['id'],'name':job['name'],'admit':admit,
                           'action':'replace' if job['state']=='replacement_ready' else 'launch' if job['state']=='queued' else 'resume',
-                          'reason':reason or ('Manual launch authorized; no worker-count limit or forecast throttle applies.' if manual
+                          'usageProbe':probe and admit,'retryAt':(retry['retryAt'] if quota_reason else retry['cooldownUntil']) if retry['confirmed'] else None,
+                          'reason':reason or ('Controlled same-thread usage retry is due; current model availability must be tested, not assumed.' if probe
+                                             else 'Fresh quota permits an idempotent retry of the existing worker.' if retry['confirmed']
+                                             else 'Manual launch authorized; no worker-count limit or forecast throttle applies.' if manual
                                              else 'Start one approved job to measure incremental demand; reassess before the next addition.')})
         if admit and not manual:
             capacity=0  # Deliberately add at most one job per sampling cycle.

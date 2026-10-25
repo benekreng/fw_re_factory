@@ -29,6 +29,7 @@ function controlProgress(j,decision){
  if(j.state==='stop_requested')return 'Stop requested; automatic restart is blocked. '+(j.workerControl?.error||j.workerControl?.notification?.error||'Waiting for the watcher to interrupt the worker and confirm it has stopped.');
  if(j.state==='stopped')return 'Stopped by you. The watcher will leave this worker stopped until you choose Resume or Replace thread.';
  if(j.state==='waiting'&&j.observation?.operatorResumeRequested)return 'Resume requested. '+(decision?.reason||'Waiting for admission checks.');
+ if(j.state==='usage_limited')return (decision?.reason||'Waiting for provider usage to recover.')+(decision?.retryAt?' Next same-thread retry check: '+time(decision.retryAt)+'.':'');
  return '';
 }
 function workerSettings(j){

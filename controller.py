@@ -23,12 +23,18 @@ def atomic_json(path, value):
     temp.replace(path)
 
 
-def claim(store, identifier, resume=False):
+def claim(store, identifier, resume=False, _usage_retry=None):
     import engine
     store.model_selection(store.job(identifier)['request']['selection'])
     decision=next((d for d in engine.plan(store)['decisions'] if d['jobId']==identifier),None)
     if not decision or not decision['admit']:
         raise Problem(decision['reason'] if decision else 'This job is not eligible for admission.',409)
+    if decision.get('usageProbe') and not _usage_retry:
+        raise Problem('Use fenced usage-retry for an idle existing worker; a telemetry-independent retry needs reconciliation.',409)
+    if resume and not _usage_retry:
+        import usage_retry
+        if usage_retry.policy(store,store.job(identifier))['confirmed']:
+            raise Problem('Use fenced usage-retry to reserve an idempotent continuation for this usage-limited worker.',409)
     with store.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         row = c.execute('SELECT * FROM jobs WHERE id=?',(identifier,)).fetchone()
@@ -41,9 +47,12 @@ def claim(store, identifier, resume=False):
         if store.config().get('launchMode','manual')!='manual' and active >= job['request']['maxParallel']:
             raise Problem('Concurrency limit reached; leave this job queued.',409)
         c.execute('UPDATE jobs SET state=?,updated=? WHERE id=?',('running' if resume else 'preparing',now(),identifier))
+        if _usage_retry:
+            observation=dict(job.get('observation') or {});observation['usageResume']=_usage_retry
+            c.execute('UPDATE jobs SET observation=? WHERE id=?',(json.dumps(observation),identifier))
         sample=c.execute("SELECT id FROM samples WHERE kind='quota' ORDER BY id DESC LIMIT 1").fetchone()
-        c.execute("INSERT OR REPLACE INTO metadata VALUES ('admission_sample',?)",(str(sample[0]),))
-        c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',(identifier,now(),'claimed',json.dumps({'sample':sample[0]})))
+        if sample:c.execute("INSERT OR REPLACE INTO metadata VALUES ('admission_sample',?)",(str(sample[0]),))
+        c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',(identifier,now(),'claimed',json.dumps({'sample':sample[0] if sample else None,'usageRetry':_usage_retry})))
     return store.job(identifier)
 
 
@@ -229,12 +238,19 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--owner', required=True)
     p.add_argument('--epoch', required=True, type=int)
-    p.add_argument('action',choices=['pending','jobs','job','claim','resume','prepare','project','launching','thread','observe','review','check','catalog','catalog_status','worker-control','attention','recovery'])
+    p.add_argument('action',choices=['pending','jobs','job','claim','resume','usage-retry','prepare','project','launching','thread','observe','review','check','catalog','catalog_status','worker-control','attention','recovery'])
     p.add_argument('id',nargs='?')
     p.add_argument('command',nargs=argparse.REMAINDER)
     args=p.parse_args()
     store=Store()
     import engine
+    if args.action=='usage-retry':
+        import usage_retry
+        try:
+            print(json.dumps(usage_retry.prepare(store,args.owner,args.epoch,args.id),indent=2))
+        except (Problem,OSError,ValueError) as e:
+            print(json.dumps({'error':str(e)}),file=sys.stderr);raise SystemExit(1)
+        return
     if args.action=='worker-control':
         import worker_control
         try:
@@ -286,7 +302,8 @@ def main():
                     raise Problem('Use the recovery helpers while thread recovery is active.',409)
                 if state not in ('running','usage_limited','waiting','attention','review_pending','incomplete'):
                     raise Problem('Invalid observed state.')
-                result=store.patch(args.id,state=state,observation={**(store.job(args.id).get('observation') or {}),**payload,'observedAt':now()})
+                import usage_retry
+                result=usage_retry.observe(store,args.id,state,payload)
             elif args.action=='review': result=record_review(store,args.id,json.load(sys.stdin))
             elif args.action=='catalog_status':
                 from model_editor import catalog_snapshot

@@ -88,7 +88,7 @@ def wizard(s):
 
 def configure(s, key, value):
     if key=='launchMode':return engine.set_launch_mode(s,value)
-    integers={'wakeSeconds':(60,3600),'sampleSeconds':(60,3600),'tokenSeconds':(60,3600),'maxParallel':(1,4),'quotaFreshSeconds':(60,3600)}
+    integers={'wakeSeconds':(60,3600),'sampleSeconds':(60,3600),'tokenSeconds':(60,3600),'maxParallel':(1,4),'quotaFreshSeconds':(60,3600),'usageRetrySeconds':(60,86400)}
     if key in integers:
         value=int(value);lo,hi=integers[key]
         if not lo<=value<=hi:raise Problem(f'{key} must be between {lo} and {hi}.')
