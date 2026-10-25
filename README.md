@@ -38,10 +38,37 @@ Use the existing watcher and preserve the saved queue/history.
 Keep my current pause settings unless I explicitly change them.
 
 Firmware and requested run settings:
-[Insert paths, device names, model/settings and subagent policy]
+Firmware paths: [Insert paths]
+Device names: [Insert names]
+Worker model/settings: [Insert provider, model and options]
+Worker subagents: [none | integration | capped]
+Worker subagent cap: [1–8 for capped; otherwise 0]
 ```
 
 An agent submitting jobs uses the CLI; an agent acting as the watcher must also read [CONTROLLER.md](CONTROLLER.md) and follow its ownership checks and launch/review procedure. Submitting another job reuses the registered watcher. If watcher messages are paused, submission does not resume them.
+
+### Choose worker subagents
+
+Subagent policy is already a saved parameter for each device group. For example, tell the agent:
+
+```text
+Allow each RE worker to use multiple subagents when useful.
+Set worker subagents to capped, with a maximum of 3 concurrent
+child agents per worker, including nested children.
+```
+
+The corresponding fields inside each `groups` entry of `REQUEST.json` are:
+
+```json
+{
+  "subagents": "capped",
+  "subagentCap": 3
+}
+```
+
+Available policies are `none` (no delegation), `integration` (one fresh integration agent at a time, solely for integration checks), and `capped` (delegation allowed, with a cap from 1 to 8). For `none` or `integration`, use `subagentCap: 0`; integration's one-agent limit comes from its policy. The interactive wizard offers the same choices.
+
+These parameters apply to the RE workers being launched. They do not authorize the agent operating the CLI or the watcher to delegate its own work. `maxParallel` separately limits concurrent top-level RE workers. The subagent cap is included in each worker's instructions; the factory does not enforce it by counting live T3 child agents. It permits useful delegation up to the cap rather than requiring that many agents to run.
 
 ### Run the CLI yourself
 
