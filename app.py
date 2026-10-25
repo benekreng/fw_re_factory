@@ -16,6 +16,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 TERMINAL = {'verified_complete', 'cancelled'}
+STOP_STATES = {'stop_requested', 'stopped'}
 
 
 def now():
@@ -259,6 +260,9 @@ class Store:
         encoded = {k: json.dumps(v) if isinstance(v,(dict,list)) else v for k,v in values.items()}
         encoded['updated'] = now()
         with self.connect() as c:
+            current=c.execute('SELECT state FROM jobs WHERE id=?',(identifier,)).fetchone()
+            if current and current['state'] in STOP_STATES:
+                raise Problem('This worker was stopped by the user. Only an explicit operator Resume can release it.',409)
             c.execute('UPDATE jobs SET '+','.join(k+'=?' for k in encoded)+' WHERE id=?', [*encoded.values(),identifier])
             c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',
                       (identifier,now(),'update',json.dumps(values)))

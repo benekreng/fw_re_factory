@@ -9,12 +9,24 @@ const empty=(a,b='')=>`<div class="empty"><strong>${esc(a)}</strong>${esc(b)}</d
 const pill=(value,style='')=>`<span class="status ${style}">${esc(label(value))}</span>`;
 const kv=(a,b)=>`<div class="kv"><span>${esc(a)}</span><span>${b}</span></div>`;
 const thread=(id,text='Open thread')=>/^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/.test(id||'')?`<a href="t3-thread://v1/${esc(id)}">${esc(text)}</a>`:'—';
-const active=new Set(['preparing','prepared','launching','running','usage_limited','waiting','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching']);
+const active=new Set(['stop_requested','preparing','prepared','launching','running','usage_limited','waiting','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching']);
 let state=null;
 let submitting=false;
 function launchControl(j){
  if(!['queued','preparing','prepared'].includes(j.state))return '';
  return `<button type="button" data-launch="${esc(j.id)}" ${submitting?'disabled':''}>${j.launchApproval?'Retry launch':'Launch'}</button>`;
+}
+function workerControl(j){
+ if(j.state==='stopped')return `<button type="button" data-worker-action="resume" data-job="${esc(j.id)}" ${submitting?'disabled':''}>Resume</button>`;
+ if(j.state==='stop_requested')return `<button type="button" data-worker-action="stop" data-job="${esc(j.id)}" ${submitting?'disabled':''}>Retry stop</button>`;
+ if(j.stopAvailable)return `<button type="button" data-worker-action="stop" data-job="${esc(j.id)}" title="Interrupt this worker and prevent automatic restart until you click Resume" ${submitting?'disabled':''}>Stop</button>`;
+ return '';
+}
+function controlProgress(j,decision){
+ if(j.state==='stop_requested')return 'Stop requested; automatic restart is blocked. '+(j.workerControl?.error||j.workerControl?.notification?.error||'Waiting for the watcher to interrupt the worker and confirm it has stopped.');
+ if(j.state==='stopped')return 'Stopped by you. The watcher will leave this worker stopped until you click Resume.';
+ if(j.state==='waiting'&&j.observation?.operatorResumeRequested)return 'Resume requested. '+(decision?.reason||'Waiting for admission checks.');
+ return '';
 }
 function workerSettings(j){
  const options=j.request.selection.options||{};
@@ -29,7 +41,10 @@ async function operatorAction(path,payload){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:JSON.stringify(payload)});
   const result=await r.json();if(!r.ok)throw new Error(result.error||'Action failed');
   await refresh();
-  $('action-status').textContent=result.approval?(result.notification?.sent?'Launch requested; watcher notified.':'Launch saved. '+(result.notification?.reason||'Waiting for the watcher.')):'Launch mode: '+result.launchMode+'.';
+  if(result.control){
+   const notice=result.control.notification;
+   $('action-status').textContent=result.control.phase==='resumed'?'Resume requested. The watcher will use the same thread when admission checks pass.':result.job.state==='stopped'?'Worker is stopped. The watcher will leave it stopped until Resume.':'Stop requested; automatic restart is blocked. '+(notice?.state==='sent'?'Watcher notified; waiting for T3 interruption.':notice?.error||'Waiting to notify the watcher.');
+  }else $('action-status').textContent=result.approval?(result.notification?.sent?'Launch requested; watcher notified.':'Launch saved. '+(result.notification?.reason||'Waiting for the watcher.')):'Launch mode: '+result.launchMode+'.';
  }catch(e){$('action-status').textContent=e.message;}
  finally{submitting=false;renderJobs();$('launch-mode').value=state.plan.launchMode;$('launch-mode').disabled=false;}
 }
@@ -40,10 +55,10 @@ function renderJobs(){
  const jobs=state.jobs.filter(j=>filter==='all'||(filter==='active'?active.has(j.state):filter==='attention'?['attention','incomplete','review_pending'].includes(j.state):j.state===filter));
  const rows=jobs.map(j=>{
   const decision=state.plan.decisions.find(d=>d.jobId===j.id);
-  const progress=(j.state==='queued'&&decision?.reason)||j.observation?.stage||j.observation?.summary||j.error||'Waiting for the watcher';
+  const progress=controlProgress(j,decision)||(j.state==='queued'&&decision?.reason)||j.observation?.stage||j.observation?.summary||j.error||'Waiting for the watcher';
   const preview=progress.length>220?progress.slice(0,217)+'…':progress;
   const browser=j.observation?.browserVerified?`<a href="http://127.0.0.1:${Number(j.port)}" target="_blank" rel="noreferrer">Browser :${Number(j.port)}</a>`:'';
-  return `<tr><td class="device">${j.thread_id?thread(j.thread_id,j.name):`<strong>${esc(j.name)}</strong>`}</td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':'')}</td><td class="profile">${esc(j.request.selection.model)}${j.modelEditable?` <button type="button" data-edit-model="${esc(j.id)}">Edit</button>`:''}<small>${esc(workerSettings(j))}</small></td><td class="progress"><span title="${esc(progress)}">${esc(preview)}</span><small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td class="actions">${launchControl(j)}${browser}</td></tr>`;
+  return `<tr><td class="device">${j.thread_id?thread(j.thread_id,j.name):`<strong>${esc(j.name)}</strong>`}</td><td>${pill(j.state,['attention','incomplete','usage_limited'].includes(j.state)?'warn':'')}</td><td class="profile">${esc(j.request.selection.model)}${j.modelEditable?` <button type="button" data-edit-model="${esc(j.id)}">Edit</button>`:''}<small>${esc(workerSettings(j))}</small></td><td class="progress"><span title="${esc(progress)}">${esc(preview)}</span><small>${esc(time(j.observation?.observedAt||j.updated))}</small></td><td class="actions">${launchControl(j)}${workerControl(j)}${browser}</td></tr>`;
  });
  $('jobs').innerHTML=jobs.length?`<div class="table-wrap"><table class="jobs-table"><thead><tr><th>Device</th><th>Status</th><th>Worker</th><th>Progress</th><th>Actions</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:empty(state.jobs.length?'No matching jobs.':'No jobs queued.',state.jobs.length?'Choose another filter.':'Add firmware with re-launch.');
 }
@@ -327,3 +342,9 @@ function syncSubagentControls(){
  $('worker-subagent-note').textContent=policy==='none'?'The worker performs all work itself.':capped?'The limit includes nested subagents across the entire worker’s delegation tree.':'Only one fresh agent at a time, solely for integration checks.';
 }
 $('worker-subagents').addEventListener('change',syncSubagentControls);
+
+$('jobs').addEventListener('click',e=>{
+ const button=e.target.closest('[data-worker-action]');if(!button)return;
+ const job=state.jobs.find(j=>j.id===button.dataset.job);if(!job?.thread_id)return;
+ operatorAction('/api/jobs/'+job.id+'/'+button.dataset.workerAction,{expectedThreadId:job.thread_id});
+});

@@ -142,6 +142,14 @@ Workers use the current `/home/vesper/RE/bens_skills/firmware-rewrite/START_PROM
 
 `CONTROLLER.md` defines ownership, launch/recovery and short-check behavior. `docs/REVIEW.md` defines independent artifact/source/behavior/browser review. A run under two hours triggers more scrutiny, never an arbitrary minimum duration. Completion requires evidence for assignment, originals, specification, exact, faithful, main and browser. The recorder requires a reviewed current commit and a successful captured check at that commit; a model's report alone does not pass the gate. This mechanical guard cannot prove semantic code quality: the watcher must actually perform the specified audit.
 
+## Stop and resume a worker
+
+Click **Stop** in the working job’s Actions column. The controller immediately records your intent and prevents the watcher from resuming or replacing that worker. It sends the watcher an update even when periodic messages are paused. The watcher uses T3’s native interruption, cancels queued turns and checks owned child work, then confirms the worker is idle.
+
+The row shows **Stop requested** until that confirmation, then **Stopped**. If the watcher is busy or usage-limited, interruption waits for an available watcher turn; saving the request already blocks automatic restarts. **Retry stop** sends another explicit notification if needed. This state survives controller restarts and watcher changes. Stopping does not roll back files or delete the project.
+
+Click **Resume** on a stopped job to authorize continuing its existing thread. Usage and capacity checks still apply; the row can wait for admission. Stop/Resume works in either queue launch mode and does not change that mode or periodic message settings. A stop during an uncertain replacement launch requires reconciliation first so an unregistered replacement cannot be overlooked.
+
 ## Change a queued worker’s settings
 
 Click **Edit** beside its model in the Worker queue. Choose the provider, model, supported model settings, actual quota pool and subagent policy, then **Save settings**. Subagents can be **Not allowed**, **Allowed with limit** (1–8 concurrent children, including nested children), or **Integration checks only** (one fresh integration agent at a time). You can change these settings on any existing unlaunched queue item. The controls come from T3’s live capability catalog, including custom models; each provider keeps its exact option names and supported values. GPT 6.1 Sol, GPT 6 Astra and Opus 5.5 appear when offered by the configured T3 providers.

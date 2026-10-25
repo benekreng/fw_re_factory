@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import uuid
 
-from app import Problem, TERMINAL, now, sha
+from app import Problem, TERMINAL, STOP_STATES, now, sha
 import engine
 
 DEFAULT_POLICY={'enabled':False,'source':'Awaiting user instructions','rules':[],
@@ -186,6 +186,7 @@ def _bounds(s, job, p):
 
 def _ticket(s, identifier, require_policy=False):
     ticket=get(s,identifier);job=s.job(ticket['job'])
+    if job['state'] in STOP_STATES:raise Problem('The user stopped this worker; recovery is not authorized.',409)
     if ticket['phase'] not in ('replaced',) and job['thread_id']!=ticket['worker_thread']:
         # A crash after binding but before closing the ticket can be reconciled by record.
         if job['thread_id']!=ticket.get('replacement_thread'):raise Problem('This recovery belongs to a superseded worker.',409)
@@ -214,7 +215,7 @@ def dispatch(s, owner, epoch, action, identifier=None, payload=None):
         if action=='show':return get(s,identifier)
         if action=='report':
             p=_enabled(s);job=s.job(identifier)
-            if not job['thread_id'] or job['state'] in TERMINAL:raise Problem('An unfinished existing worker is required.')
+            if not job['thread_id'] or job['state'] in TERMINAL | STOP_STATES:raise Problem('An unfinished existing worker is required.')
             if payload.get('expectedThreadId')!=job['thread_id']:raise Problem('Observed thread no longer matches this job.',409)
             rule=next((r for r in p['rules'] if r['id']==payload.get('ruleId')),None)
             if not rule:raise Problem('The observation must match an explicit user-defined rule.')

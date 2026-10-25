@@ -16,7 +16,7 @@ import uuid
 
 from app import Problem, now
 
-ACTIVE = {'preparing','prepared','launching','running','usage_limited','waiting','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching'}
+ACTIVE = {'stop_requested','preparing','prepared','launching','running','usage_limited','waiting','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching'}
 SLOTS = ACTIVE - {'usage_limited','waiting'}
 
 
@@ -37,6 +37,9 @@ def initialize(s):
         CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS launch_approvals(job TEXT PRIMARY KEY, target TEXT NOT NULL,
           requested TEXT NOT NULL, notified TEXT);
+        CREATE TABLE IF NOT EXISTS worker_controls(job TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE,
+          thread TEXT NOT NULL, phase TEXT NOT NULL, previous_state TEXT NOT NULL,
+          requested TEXT NOT NULL, updated TEXT NOT NULL, notification TEXT, evidence TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS recoveries(id TEXT PRIMARY KEY, job TEXT NOT NULL,
           worker_thread TEXT NOT NULL, phase TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL,
           policy TEXT NOT NULL, rule_id TEXT NOT NULL, evidence TEXT NOT NULL,
@@ -229,6 +232,8 @@ def replace_worker(s, identifier, thread, expected_old=None, reason='User suppli
         if row is None:raise Problem('Unknown job ID or device directory name.',404)
         job=s.decode(row);old=job['thread_id']
         if old==thread:return {'changed':False,'job':job,'watcher':owner(s)}
+        from app import STOP_STATES
+        if job['state'] in STOP_STATES:raise Problem('The user stopped this worker; replacement is not authorized.',409)
         if not old or job['state']=='cancelled':raise Problem('Only an existing, uncancelled worker can be replaced.',409)
         if expected_old is not None and old!=expected_old:raise Problem('The worker binding changed; inspect it before retrying.',409)
         with s.connect() as c:
@@ -458,7 +463,7 @@ def forecast(s):
 def plan(s):
     config=s.config(); jobs=s.jobs(); active=[j for j in jobs if j['state'] in SLOTS]
     queued=sorted((j for j in jobs if j['state']=='queued'),key=lambda j:j['created'])
-    resumes=sorted((j for j in jobs if j['state']=='usage_limited' or (j['state']=='waiting' and (j.get('observation') or {}).get('checkpointPaused'))),key=lambda j:j['created'])
+    resumes=sorted((j for j in jobs if j['state']=='usage_limited' or (j['state']=='waiting' and ((j.get('observation') or {}).get('checkpointPaused') or (j.get('observation') or {}).get('operatorResumeRequested')))),key=lambda j:j['created'])
     replacements=sorted((j for j in jobs if j['state']=='replacement_ready'),key=lambda j:j['created'])
     current=latest(s,'quota'); predictions=forecast(s)
     capacity=max(0,config.get('maxParallel',2)-len(active)); decisions=[]
@@ -560,7 +565,11 @@ def dashboard(s):
         events=[dict(r) for r in c.execute('SELECT * FROM events ORDER BY id DESC LIMIT 100')]
         rows=[dict(r) for r in c.execute("SELECT * FROM quota WHERE time>=? ORDER BY id DESC LIMIT 5000",(dt.datetime.fromtimestamp(time.time()-86400,dt.timezone.utc).isoformat(),))][::-1]
     jobs=s.jobs()
-    for job in jobs:job['launchApproval']=launch_approval(s,job)
+    import worker_control
+    for job in jobs:
+        job['launchApproval']=launch_approval(s,job)
+        job['workerControl']=worker_control.get(s,job['id'])
+        job['stopAvailable']=bool(job.get('thread_id') and job['state'] in worker_control.STOPPABLE)
     policy_state=recovery.policy_snapshot(s)
     return dict(time=now(),watcher=owner(s),jobs=jobs,plan=plan(s),usage=latest(s,'quota'),hostUsage=host_usage.sample(),
                 recoveries=recovery.records(s),recoveryPolicy=policy_state['policy'],
@@ -571,11 +580,13 @@ def dashboard(s):
 
 def daemon(s):
     import recovery
+    import worker_control
     last_sample=0;last_tokens=0
     # systemd enforces singleton. This lock also protects a manually started second daemon.
     with lock(s,'daemon'):
         while True:
             try:
+                worker_control.notify(s)
                 recovery.notify_policy_update(s)
                 if time.monotonic()-last_sample>=s.config().get('sampleSeconds',240):
                     sample_usage(s);last_sample=time.monotonic()

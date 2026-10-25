@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import engine
 import recovery
 import model_editor
+import worker_control
 from app import Problem
 
 
@@ -41,7 +42,7 @@ def make_server(store, port=8787, host='127.0.0.1'):
             self.respond(data,mime,code)
         def do_POST(self):
             path=urlparse(self.path).path
-            match=re.fullmatch(r'/api/jobs/([a-zA-Z0-9_-]{1,64})/(launch|model|settings)',path)
+            match=re.fullmatch(r'/api/jobs/([a-zA-Z0-9_-]{1,64})/(launch|model|settings|stop|resume)',path)
             if path not in ('/api/launch-mode','/api/recovery-policy','/api/recovery-policy/notify','/api/models/refresh') and not match:
                 self.respond({'error':'Unsupported dashboard action'},code=405);return
             if not self.valid_host() or self.headers.get('Origin')!='http://'+self.headers.get('Host','') or not hmac.compare_digest(self.headers.get('X-CSRF-Token','').encode(),csrf_token.encode()):
@@ -53,7 +54,9 @@ def make_server(store, port=8787, host='127.0.0.1'):
                     raise Problem('Send a small JSON object.')
                 payload=json.loads(self.rfile.read(length))
                 if not isinstance(payload,dict):raise Problem('Expected a JSON object.')
-                if match and match[2] in ('model','settings'):
+                if match and match[2] in ('stop','resume'):
+                    result=worker_control.operator_action(store,match[1],match[2],payload.get('expectedThreadId'))
+                elif match and match[2] in ('model','settings'):
                     result={'job':model_editor.update_model(store,match[1],payload)}
                 elif path=='/api/models/refresh':
                     result=model_editor.request_catalog(store)

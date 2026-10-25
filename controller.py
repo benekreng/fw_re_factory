@@ -37,7 +37,7 @@ def claim(store, identifier, resume=False):
         job = store.decode(row)
         if job['state'] not in (('waiting','usage_limited') if resume else ('queued',)):
             raise Problem('Already claimed; reconcile its saved state instead of launching twice.',409)
-        active = c.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('preparing','prepared','launching','running','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching')").fetchone()[0]
+        active = c.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('stop_requested','preparing','prepared','launching','running','review_pending','incomplete','attention','recovery_pending','replacement_ready','replacement_launching')").fetchone()[0]
         if active >= job['request']['maxParallel']:
             raise Problem('Concurrency limit reached; leave this job queued.',409)
         c.execute('UPDATE jobs SET state=?,updated=? WHERE id=?',('running' if resume else 'preparing',now(),identifier))
@@ -227,12 +227,21 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--owner', required=True)
     p.add_argument('--epoch', required=True, type=int)
-    p.add_argument('action',choices=['pending','jobs','job','claim','resume','prepare','project','launching','thread','observe','review','check','catalog','catalog_status','attention','recovery'])
+    p.add_argument('action',choices=['pending','jobs','job','claim','resume','prepare','project','launching','thread','observe','review','check','catalog','catalog_status','worker-control','attention','recovery'])
     p.add_argument('id',nargs='?')
     p.add_argument('command',nargs=argparse.REMAINDER)
     args=p.parse_args()
     store=Store()
     import engine
+    if args.action=='worker-control':
+        import worker_control
+        try:
+            payload=json.load(sys.stdin) if args.id in ('complete','error') else None
+            result=worker_control.dispatch(store,args.owner,args.epoch,args.id,args.command[0] if args.command else None,payload)
+            print(json.dumps(result,indent=2))
+        except (Problem,OSError,ValueError) as e:
+            print(json.dumps({'error':str(e)}),file=sys.stderr);raise SystemExit(1)
+        return
     if args.action=='recovery':
         import recovery
         try:
