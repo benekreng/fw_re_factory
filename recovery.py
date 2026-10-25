@@ -135,7 +135,7 @@ def notify_policy_update(s, *, retry_revision=None):
 
 def _decode(row):
     result=dict(row)
-    for key in ('policy','result'):
+    for key in ('policy','result','notification'):
         if result.get(key):result[key]=json.loads(result[key])
     return result
 
@@ -167,7 +167,7 @@ def _show(s, thread):
 
 def _retired(s, thread):
     t=_show(s,thread)
-    if not t.get('archived') or t.get('activeRunId') or t.get('pendingRequestCount',0):raise Problem('Stop and archive the broken thread before preparing its replacement.',409)
+    if t.get('archived') is not True or t.get('activeRunId') or type(t.get('pendingRequestCount')) is not int or t['pendingRequestCount']!=0:raise Problem('Stop and archive the broken thread before preparing its replacement.',409)
 
 
 def _enabled(s):
@@ -190,7 +190,7 @@ def _ticket(s, identifier, require_policy=False):
     if ticket['phase'] not in ('replaced',) and job['thread_id']!=ticket['worker_thread']:
         # A crash after binding but before closing the ticket can be reconciled by record.
         if job['thread_id']!=ticket.get('replacement_thread'):raise Problem('This recovery belongs to a superseded worker.',409)
-    if require_policy:
+    if require_policy and ticket['origin'] != 'operator':
         current=_enabled(s)
         if current!=ticket['policy']:raise Problem('Recovery policy changed; cancel and reassess this incident.',409)
     return ticket,job
@@ -233,8 +233,13 @@ def dispatch(s, owner, epoch, action, identifier=None, payload=None):
             s.patch(identifier,state='recovery_pending',observation={'recoveryId':rid,'summary':'Recovery rule matched; follow the saved bounded procedure.','observedAt':at})
             engine.event(s,'thread_recovery_reported',{'recoveryId':rid,'ruleId':rule['id']},identifier)
             return get(s,rid)
-        ticket,job=_ticket(s,identifier,require_policy=action in ('repair_begin','prepare','launch'))
+        ticket,job=_ticket(s,identifier,require_policy=action in ('retire_begin','repair_begin','prepare','launch'))
         rule=next(r for r in ticket['policy']['rules'] if r['id']==ticket['rule_id'])
+        if action=='retire_begin':
+            if ticket['phase']!='retire_pending':raise Problem('Only a saved retirement intent can interrupt this worker.',409)
+            actual=_show(s,ticket['worker_thread']);run=actual.get('activeRunId')
+            return {'threadId':ticket['worker_thread'],'runId':run,
+                    'clientRequestId':'factory-retire:'+ticket['id']+':'+hashlib.sha256(str(run).encode()).hexdigest()[:16]}
         if action=='repair_begin':
             if ticket['phase']!='repair_pending' or ticket['repair_attempts']>=rule['maxRepairAttempts']:raise Problem('No further repair attempt is authorized.',409)
             return _update(s,identifier,phase='repairing',repair_attempts=ticket['repair_attempts']+1)
@@ -252,7 +257,8 @@ def dispatch(s, owner, epoch, action, identifier=None, payload=None):
         if action=='prepare':
             if ticket['phase']=='replacement_ready':return ticket|{'promptPath':str(_artifact(s,ticket)/'START_PROMPT.txt')}
             if ticket['phase']!='retire_pending':raise Problem('Finish the authorized repair procedure before replacing the thread.',409)
-            _bounds(s,job['id'],ticket['policy']);_retired(s,ticket['worker_thread'])
+            if ticket['origin'] != 'operator':_bounds(s,job['id'],ticket['policy'])
+            _retired(s,ticket['worker_thread'])
             from controller import render_worker_prompt, atomic_json
             destination=Path(job['request']['destination']).resolve()
             if not destination.is_relative_to(s.projects) or not destination.is_dir():raise Problem('The existing project directory is unavailable.')
@@ -270,7 +276,8 @@ def dispatch(s, owner, epoch, action, identifier=None, payload=None):
             return _update(s,identifier,phase='replacement_ready')|{'promptPath':str(artifacts/'START_PROMPT.txt')}
         if action=='launch':
             if ticket['phase']!='replacement_ready':raise Problem('Do not repeat an uncertain replacement launch; reconcile T3 threads first.',409)
-            _retired(s,ticket['worker_thread']);_bounds(s,job['id'],ticket['policy'])
+            _retired(s,ticket['worker_thread'])
+            if ticket['origin'] != 'operator':_bounds(s,job['id'],ticket['policy'])
             s.model_selection(job['request']['selection'])
             decision=next((d for d in engine.plan(s)['decisions'] if d['jobId']==job['id']),None)
             if not decision or not decision['admit']:raise Problem(decision['reason'] if decision else 'Replacement is not eligible.',409)

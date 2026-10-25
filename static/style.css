@@ -150,3 +150,5 @@ textarea { display: block; width: 100%; margin-top: 5px; min-height: 76px; resiz
 
 .subagent-options { margin-top: 16px; }
 #worker-subagent-cap { width: 70px; }
+
+.actions button + button { margin-left: 6px; }

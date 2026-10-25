@@ -262,7 +262,7 @@ class Store:
         with self.connect() as c:
             current=c.execute('SELECT state FROM jobs WHERE id=?',(identifier,)).fetchone()
             if current and current['state'] in STOP_STATES:
-                raise Problem('This worker was stopped by the user. Only an explicit operator Resume can release it.',409)
+                raise Problem('This worker was stopped by the user. Only an explicit operator Resume or Replace thread can release it.',409)
             c.execute('UPDATE jobs SET '+','.join(k+'=?' for k in encoded)+' WHERE id=?', [*encoded.values(),identifier])
             c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',
                       (identifier,now(),'update',json.dumps(values)))

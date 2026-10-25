@@ -150,6 +150,14 @@ The row shows **Stop requested** until that confirmation, then **Stopped**. If t
 
 Click **Resume** on a stopped job to authorize continuing its existing thread. Usage and capacity checks still apply; the row can wait for admission. Stop/Resume works in either queue launch mode and does not change that mode or periodic message settings. A stop during an uncertain replacement launch requires reconciliation first so an unregistered replacement cannot be overlooked.
 
+## Replace a broken thread with a fresh continuation
+
+Click **Replace thread** in the job’s Actions column when the conversation is no longer usable. This is available on existing unfinished workers, including stopped ones. The controller saves a one-shot replacement request and immediately notifies the watcher. It works with automatic recovery disabled and in either queue launch mode; no separate Launch click is needed. A busy or usage-limited watcher processes the saved request when it can run.
+
+The watcher interrupts the old worker, cancels its queued turns/owned child work, confirms it is idle, and archives its thread. It creates a fresh continuation in the **same project directory**, using the **same model/options and subagent policy**. The prompt includes the continuation preamble, complete current standard task and saved run details at the bottom. The new agent continues from the project files; it receives no old conversation, old thread ID or repair/error history. The old thread stays retired.
+
+Usage, concurrency and scheduling-pause checks still apply. The row shows the replacement phase or waiting reason. **Retry replacement** notifies the watcher again about the same saved incident; it does not create another candidate after an uncertain launch. Stop keeps a worker stopped; Resume continues that same thread; Replace thread retires it and creates a new one. A Stop before replacement launch cancels that request. An in-flight/uncertain replacement must be reconciled before a different candidate can be created.
+
 ## Change a queued worker’s settings
 
 Click **Edit** beside its model in the Worker queue. Choose the provider, model, supported model settings, actual quota pool and subagent policy, then **Save settings**. Subagents can be **Not allowed**, **Allowed with limit** (1–8 concurrent children, including nested children), or **Integration checks only** (one fresh integration agent at a time). You can change these settings on any existing unlaunched queue item. The controls come from T3’s live capability catalog, including custom models; each provider keeps its exact option names and supported values. GPT 6.1 Sol, GPT 6 Astra and Opus 5.5 appear when offered by the configured T3 providers.

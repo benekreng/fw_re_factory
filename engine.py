@@ -47,6 +47,9 @@ def initialize(s):
         CREATE UNIQUE INDEX IF NOT EXISTS one_open_recovery ON recoveries(job)
           WHERE phase NOT IN ('recovered','replaced','cancelled','attention');
         ''')
+        recovery_cols={r[1] for r in c.execute('PRAGMA table_info(recoveries)')}
+        for key,kind in [('origin',"TEXT NOT NULL DEFAULT 'automatic'"),('notification','TEXT')]:
+            if key not in recovery_cols:c.execute('ALTER TABLE recoveries ADD COLUMN '+key+' '+kind)
         cols={r[1] for r in c.execute('PRAGMA table_info(quota)')}
         for key,kind in [('active_workers','INTEGER'),('profile','TEXT')]:
             if key not in cols:c.execute('ALTER TABLE quota ADD COLUMN '+key+' '+kind)
@@ -566,9 +569,13 @@ def dashboard(s):
         rows=[dict(r) for r in c.execute("SELECT * FROM quota WHERE time>=? ORDER BY id DESC LIMIT 5000",(dt.datetime.fromtimestamp(time.time()-86400,dt.timezone.utc).isoformat(),))][::-1]
     jobs=s.jobs()
     import worker_control
+    import manual_replacement
+    replacements={r['job']:r for r in manual_replacement.pending(s)}
     for job in jobs:
         job['launchApproval']=launch_approval(s,job)
         job['workerControl']=worker_control.get(s,job['id'])
+        job['replacementControl']=replacements.get(job['id'])
+        job['replaceAvailable']=bool(job.get('thread_id') and job.get('project_id') and (job['state'] in worker_control.STOPPABLE | {'stop_requested','stopped'} or job['id'] in replacements))
         job['stopAvailable']=bool(job.get('thread_id') and job['state'] in worker_control.STOPPABLE)
     policy_state=recovery.policy_snapshot(s)
     return dict(time=now(),watcher=owner(s),jobs=jobs,plan=plan(s),usage=latest(s,'quota'),hostUsage=host_usage.sample(),
@@ -581,11 +588,13 @@ def dashboard(s):
 def daemon(s):
     import recovery
     import worker_control
+    import manual_replacement
     last_sample=0;last_tokens=0
     # systemd enforces singleton. This lock also protects a manually started second daemon.
     with lock(s,'daemon'):
         while True:
             try:
+                manual_replacement.notify(s)
                 worker_control.notify(s)
                 recovery.notify_policy_update(s)
                 if time.monotonic()-last_sample>=s.config().get('sampleSeconds',240):

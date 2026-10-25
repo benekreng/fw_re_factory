@@ -57,7 +57,7 @@ def request_stop(store, identifier, expected_thread):
                 (identifier, request_id, job['thread_id'], job['state'], at, at, json.dumps(_notice('stop'))))
             c.execute("UPDATE jobs SET state='stop_requested',updated=?,error=NULL WHERE id=?", (at, identifier))
             c.execute('DELETE FROM launch_approvals WHERE job=?', (identifier,))
-            c.execute("UPDATE recoveries SET phase='cancelled',updated=?,error='Stopped by the user; automatic recovery is disabled for this job.' WHERE job=? AND phase NOT IN ('recovered','replaced','cancelled','attention')", (at, identifier))
+            c.execute("UPDATE recoveries SET phase='cancelled',updated=?,error='Stopped by the user; automatic recovery is disabled for this job.' WHERE job=? AND (phase NOT IN ('recovered','replaced','cancelled','attention') OR (origin='operator' AND phase='attention' AND replacement_thread IS NULL))", (at, identifier))
             # Invalidate any watcher decisions made before the operator’s stop.
             c.execute('UPDATE watcher SET epoch=epoch+1,last_wake=NULL WHERE id=1')
             c.execute('INSERT INTO events(job,time,kind,detail) VALUES (?,?,?,?)',
@@ -116,7 +116,7 @@ def notify(store):
                        f'Ownership: thread={owner["thread"]} epoch={owner["epoch"]}. '
                        f'Read {store.root}/CONTROLLER.md and fenced worker-control list now. '
                        'Handle operator stops before ordinary monitoring or continuation. '
-                       'A stopped worker must never be resumed or replaced without an explicit operator Resume. '
+                       'A stopped worker must stay stopped unless the operator explicitly requests Resume or Replace thread. '
                        'Use native T3 interruption and cancel pending queued turns; record verified idle state. '
                        'Resume requests use the same thread and normal admission checks. '
                        'Keep launch mode and periodic message settings unchanged.')

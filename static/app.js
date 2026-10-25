@@ -17,14 +17,17 @@ function launchControl(j){
  return `<button type="button" data-launch="${esc(j.id)}" ${submitting?'disabled':''}>${j.launchApproval?'Retry launch':'Launch'}</button>`;
 }
 function workerControl(j){
- if(j.state==='stopped')return `<button type="button" data-worker-action="resume" data-job="${esc(j.id)}" ${submitting?'disabled':''}>Resume</button>`;
- if(j.state==='stop_requested')return `<button type="button" data-worker-action="stop" data-job="${esc(j.id)}" ${submitting?'disabled':''}>Retry stop</button>`;
- if(j.stopAvailable)return `<button type="button" data-worker-action="stop" data-job="${esc(j.id)}" title="Interrupt this worker and prevent automatic restart until you click Resume" ${submitting?'disabled':''}>Stop</button>`;
- return '';
+ let buttons='';
+ if(j.state==='stopped')buttons=`<button type="button" data-worker-action="resume" data-job="${esc(j.id)}" ${submitting?'disabled':''}>Resume</button>`;
+ else if(j.state==='stop_requested')buttons=`<button type="button" data-worker-action="stop" data-job="${esc(j.id)}" ${submitting?'disabled':''}>Retry stop</button>`;
+ else if(j.stopAvailable)buttons=`<button type="button" data-worker-action="stop" data-job="${esc(j.id)}" title="Interrupt this worker and prevent automatic restart until an explicit Resume or Replace thread" ${submitting?'disabled':''}>Stop</button>`;
+ if(j.replaceAvailable)buttons+=`<button type="button" data-worker-action="replace" data-job="${esc(j.id)}" title="Retire this thread and create a fresh continuation in the same project, with no old chat history" ${submitting?'disabled':''}>${j.replacementControl?'Retry replacement':'Replace thread'}</button>`;
+ return buttons;
 }
 function controlProgress(j,decision){
+ if(j.replacementControl){const r=j.replacementControl;const phase={retire_pending:'Retiring old thread',replacement_ready:'Continuation ready',launching:'Starting continuation',attention:'Needs attention'}[r.phase]||label(r.phase);return 'Replacement requested · '+phase+'. '+(r.error||r.notification?.error||decision?.reason||'The watcher will retire the old thread and create a clean continuation.');}
  if(j.state==='stop_requested')return 'Stop requested; automatic restart is blocked. '+(j.workerControl?.error||j.workerControl?.notification?.error||'Waiting for the watcher to interrupt the worker and confirm it has stopped.');
- if(j.state==='stopped')return 'Stopped by you. The watcher will leave this worker stopped until you click Resume.';
+ if(j.state==='stopped')return 'Stopped by you. The watcher will leave this worker stopped until you choose Resume or Replace thread.';
  if(j.state==='waiting'&&j.observation?.operatorResumeRequested)return 'Resume requested. '+(decision?.reason||'Waiting for admission checks.');
  return '';
 }
@@ -41,9 +44,12 @@ async function operatorAction(path,payload){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrfToken},body:JSON.stringify(payload)});
   const result=await r.json();if(!r.ok)throw new Error(result.error||'Action failed');
   await refresh();
-  if(result.control){
+  if(result.replacement){
+   const notice=result.replacement.notification;
+   $('action-status').textContent='Replacement saved. '+(notice?.state==='sent'?'Watcher notified.':notice?.error||'Waiting to notify the watcher.')+' The fresh thread will continue from the same project without the old chat history.';
+  }else if(result.control){
    const notice=result.control.notification;
-   $('action-status').textContent=result.control.phase==='resumed'?'Resume requested. The watcher will use the same thread when admission checks pass.':result.job.state==='stopped'?'Worker is stopped. The watcher will leave it stopped until Resume.':'Stop requested; automatic restart is blocked. '+(notice?.state==='sent'?'Watcher notified; waiting for T3 interruption.':notice?.error||'Waiting to notify the watcher.');
+   $('action-status').textContent=result.control.phase==='resumed'?'Resume requested. The watcher will use the same thread when admission checks pass.':result.job.state==='stopped'?'Worker is stopped. The watcher will leave it stopped until Resume or Replace thread.':'Stop requested; automatic restart is blocked. '+(notice?.state==='sent'?'Watcher notified; waiting for T3 interruption.':notice?.error||'Waiting to notify the watcher.');
   }else $('action-status').textContent=result.approval?(result.notification?.sent?'Launch requested; watcher notified.':'Launch saved. '+(result.notification?.reason||'Waiting for the watcher.')):'Launch mode: '+result.launchMode+'.';
  }catch(e){$('action-status').textContent=e.message;}
  finally{submitting=false;renderJobs();$('launch-mode').value=state.plan.launchMode;$('launch-mode').disabled=false;}

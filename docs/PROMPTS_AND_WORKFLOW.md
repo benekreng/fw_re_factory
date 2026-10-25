@@ -10,7 +10,7 @@ This factory depends on [benekreng/bens_skills](https://github.com/benekreng/ben
 - **Python controller (`engine.py`, `controller.py`, `recovery.py`):** persists the queue and observations, samples usage, estimates depletion, checks admission and ownership, prepares prompts, records checks, and sends watcher wake messages. The daemon runs without an agent conversation being active.
 - **Watcher agent:** reads the controller's instructions and saved state, uses T3 to launch workers, examines their actual output, resumes unfinished work and independently audits completion. The agent performs the source and behavior review; Python enforces the recorded state transitions and checks.
 - **Worker agents:** carry out the firmware-rewrite task in their own device directories using their saved model/settings and subagent policy.
-- **Dashboard:** displays controller state, provides a manual/automatic mode selector, lets the operator approve individual queued jobs with Launch, and edits model/settings and subagent permission/limits for unlaunched jobs, and provides Stop/Resume for registered workers. It also edits the independent recovery policy and immediately posts saved updates to the watcher. A compact host line shows aggregate CPU and RAM usage. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
+- **Dashboard:** displays controller state, provides a manual/automatic mode selector, lets the operator approve individual queued jobs with Launch, and edits model/settings and subagent permission/limits for unlaunched jobs, and provides Stop/Resume and manual Replace thread for registered workers. It also edits the independent recovery policy and immediately posts saved updates to the watcher. A compact host line shows aggregate CPU and RAM usage. It displays jobs, observations, usage history, forecasts, reviews and recovery records. It refreshes every 15 seconds. The configured listener is http://100.91.196.107:8787 on the Tailscale adapter.
 
 The database is the persistent record. The watcher can be replaced without recreating the queue or losing usage and review history.
 
@@ -143,7 +143,7 @@ Run details (these settings override the defaults above):
 
 The new conversation acknowledges earlier project work and continues from the files. It receives no old conversation, summary, thread identity, provider errors or repair transcript. It must inspect and verify the existing work. The renderer always starts from the standard task, so multiple replacements do not accumulate nested preambles. “Same prompt” here means the current standard task with approved edits, rather than restoring an obsolete historical template.
 
-A manually created continuation can instead be adopted with `re-launch worker replace DEVICE NEW_THREAD_ID`. Adoption does not send it this prompt or any other message; that thread already exists. See [thread recovery](THREAD_RECOVERY.md).
+The dashboard’s **Replace thread** explicitly requests this continuation workflow without automatic rules or another Launch click; it retires the old worker and creates the new thread in the same project with the saved settings. A manually created continuation can instead be adopted with `re-launch worker replace DEVICE NEW_THREAD_ID`. Adoption does not send it this prompt or any other message; that thread already exists. See [thread recovery](THREAD_RECOVERY.md).
 
 ## Operator stops in the dashboard
 
@@ -212,7 +212,7 @@ Watcher work uses no subagents unless explicitly authorized. Worker subagent pol
 The following summarizes the current instructions:
 
 ```text
-- Check enabled recovery rules and open incidents first.
+- Handle operator Stop/Replace requests before enabled automatic recovery rules and open incidents.
 - Read pending jobs and the controller's admission plan.
 - Inspect worker state and actual new/relevant messages.
 - Do not ask workers for status when it is already visible.
@@ -317,7 +317,7 @@ A matching incident is persisted before repair or launch actions. Bounded repair
 4. **Adjust concurrency using measurements.** The controller estimates percentage-point depletion per hour, time to exhaustion, and demand by active worker profile. Forecasts inform whether to add another worker. It requires calibration before expanding concurrency, respects hard limits and concurrency caps, and treats missing data as a hold. Different model/settings/subagent mixes need new measurements.
 5. **Handle limits and resets.** The watcher retries limited workers in the same conversations after recovery evidence. The default `short-window` policy prioritizes Claude's five-hour window where available, while still blocking hard weekly exhaustion. `weekly-first` and `balanced` are alternatives. Other account activity affects the estimates, so exact depletion at reset is not guaranteed.
 6. **Review completion.** A final “done” starts an independent audit. Concrete findings go back to the worker; pending review stays pending; only supported completion is recorded as verified.
-7. **Continue using the same watcher.** Submit more firmware through the launcher. To change the watcher, point ownership at another existing thread. To replace a broken worker, use manual adoption or a configured recovery rule. Neither requires discarding the logical job or project files.
+7. **Continue using the same watcher.** Submit more firmware through the launcher. To change the watcher, point ownership at another existing thread. To replace a broken worker, use the dashboard’s explicit Replace thread action, manual adoption of an existing continuation, or a configured automatic recovery rule. Neither requires discarding the logical job or project files.
 
 Local `ccusage` reports supplement subscription percentages with token totals and available cache fields. They are cumulative snapshots and are not summed across polls. Per-worker attribution is used only where the provider-session mapping is established. Token counts are distinct from subscription-limit percentages.
 

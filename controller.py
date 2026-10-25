@@ -168,6 +168,8 @@ def record_review(store, identifier, review):
         raise Problem('Resolve the active thread recovery before reviewing completion.',409)
     if not job.get('thread_id'):
         raise Problem('This job has no worker thread.')
+    import manual_replacement
+    if manual_replacement.pending(store,identifier):raise Problem('Resolve the operator replacement before reviewing completion.',409)
     verdict = review.get('verdict')
     if verdict not in ('verified_complete','incomplete','review_pending'):
         raise Problem('Invalid review verdict.')
@@ -277,6 +279,8 @@ def main():
             elif args.action=='observe':
                 payload=json.load(sys.stdin)
                 state=payload.pop('state')
+                import manual_replacement
+                if manual_replacement.pending(store,args.id):raise Problem('Follow the explicit replacement record instead of resuming the retired worker.',409)
                 if store.job(args.id)['state'] in TERMINAL:raise Problem('A finished job cannot be resurrected by an observation.')
                 if store.job(args.id)['state'] in ('recovery_pending','replacement_ready','replacement_launching'):
                     raise Problem('Use the recovery helpers while thread recovery is active.',409)
