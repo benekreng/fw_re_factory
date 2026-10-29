@@ -12,7 +12,9 @@ import uuid
 
 from app import Store, Problem, now, sha, TERMINAL
 
-AREAS = {'assignment','original','specification','exact','faithful','main','browser'}
+REVIEW_POLICY = 'algorithm-library-v2'
+AREAS = {'assignment','algorithms','library','device','fidelity','browser','reuse'}
+START_PROMPT = Path('/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md')
 
 
 def atomic_json(path, value):
@@ -56,17 +58,20 @@ def claim(store, identifier, resume=False, _usage_retry=None):
     return store.job(identifier)
 
 
-def render_worker_prompt(job, *, continuation=False):
+def render_worker_prompt(job, *, continuation=False, skill_path=None):
     r=job['request'];destination=Path(r['destination'])
-    prompt_file = Path('/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md')
+    prompt_file = START_PROMPT
     skill_file = prompt_file.with_name('SKILL.md')
+    assigned_skill = Path(skill_path) if skill_path else skill_file
     policy = ('If one firmware candidate was selected, treat its version as the latest; do not search for newer firmware. '
               'If that candidate is an archive containing multiple firmware versions, inspect those candidates and use the newest appropriate version. '
               'If multiple firmware candidates were selected, identify and use the newest appropriate supplied version for this device/hardware revision. '
               'Record the selection evidence; do not choose a bootloader or incompatible hardware variant as an application update.')
     extra = '\n\nRun details (these settings override the defaults above):\n'
     extra += 'Device: '+r['name']+'\nWorkspace: '+str(destination)+'\n'
-    extra += 'Skill path: '+str(skill_file)+'\n'
+    extra += 'Skill path: '+str(assigned_skill)+'\n'
+    if skill_path:
+        extra += 'This is the saved skill snapshot for this assignment. Read it after compaction; do not replace it with the current upstream skill. If unavailable, report that concrete blocker.\n'
     extra += 'Immutable selected originals are under originals/; LAUNCH_REQUEST.json records their hashes, roles and source URLs. Inventory these paths before analysis.\n'
     extra += policy+' Continue the skill\'s device/manual research in either case.\n'
     extra += 'Target host: '+(r.get('targetHost') or 'none; use the skill defaults')+'\n'
@@ -74,13 +79,13 @@ def render_worker_prompt(job, *, continuation=False):
     extra += 'For every completion claim, cite the relevant artifact paths, rerunnable checks and remaining limitations.\n'
     policy_sub=r.get('subagents','none')
     if policy_sub=='none':
-        extra += 'User subagent policy: NO subagents or delegated agents. Perform all work yourself. This explicitly overrides the skill parallel-agent and fresh-agent integration requirements. Document this exception and perform independent integration checks yourself; do not claim unchanged full skill compliance.\n'
+        extra += 'User subagent policy: NO subagents or delegated agents. Perform all work and integration checks yourself.\n'
     elif policy_sub=='integration':
-        extra += 'User subagent policy: only one fresh integration agent at a time, solely for the skill integration checks. Do not delegate reverse engineering or implementation.\n'
+        extra += 'User subagent policy: delegation is optional and limited to integration checks, with at most one integration agent at a time. Do not delegate reverse engineering or implementation.\n'
     else:
         extra += 'User subagent policy: allowed, with at most '+str(r['subagentCap'])+' concurrent child agents in total, including nested children.\n'
     extra += 'Selected files:\n'+'\n'.join('- '+f['kind']+': originals/'+f['path'] for f in r['files'])+'\n'
-    task = prompt_file.read_text()
+    task = prompt_file.read_text().replace(str(skill_file), str(assigned_skill))
     if continuation:
         task = ('Another agent has already worked on this project and was assigned the task prompt below. '
                 'Its work is in this directory. Continue the work from the existing project files. '
@@ -92,9 +97,64 @@ def render_worker_prompt(job, *, continuation=False):
     return prompt,prompt_file,skill_file
 
 
+def save_worker_prompt(job, artifacts, *, continuation=False):
+    """Pin the assigned skill and retain earlier prepared evidence on refresh."""
+    artifacts = Path(artifacts)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    skill_file = START_PROMPT.with_name('SKILL.md')
+    skill_hash = sha(skill_file)
+    snapshot = artifacts/'skills'/(skill_hash+'.md')
+    snapshot.parent.mkdir(exist_ok=True)
+    if snapshot.exists():
+        if sha(snapshot) != skill_hash:
+            raise Problem('A saved skill snapshot changed; preserve it and investigate.',409)
+    else:
+        shutil.copy2(skill_file, snapshot)
+        if sha(snapshot) != skill_hash:
+            raise Problem('The skill changed during preparation; repeat preparation.',409)
+    prompt,base,skill = render_worker_prompt(job,continuation=continuation,skill_path=snapshot)
+    prompt_path = artifacts/'START_PROMPT.txt'
+    old_files = [artifacts/name for name in ('START_PROMPT.txt','SKILL.md','provenance.json')]
+    changed = ((prompt_path.exists() and prompt_path.read_text()!=prompt) or
+               ((artifacts/'SKILL.md').exists() and sha(artifacts/'SKILL.md')!=skill_hash))
+    if changed:
+        archive = artifacts/'instruction-history'/uuid.uuid4().hex
+        archive.mkdir(parents=True)
+        for path in old_files:
+            if path.exists():shutil.copy2(path,archive/path.name)
+    prompt_path.write_text(prompt)
+    shutil.copy2(snapshot,artifacts/'SKILL.md')
+    provenance = dict(startPromptPath=str(base),startPromptSha256=sha(base),
+        skillPath=str(skill),skillSha256=skill_hash,assignedSkillPath=str(snapshot),
+        generatedPromptSha256=sha(prompt_path),preparedAt=now(),reviewPolicy=REVIEW_POLICY)
+    atomic_json(artifacts/'provenance.json',provenance)
+    return provenance
+
+
+def require_current_prompt(artifacts):
+    """Do not reserve a new launch with obsolete or modified prepared instructions."""
+    artifacts = Path(artifacts)
+    try:
+        saved = json.loads((artifacts/'provenance.json').read_text())
+        snapshot = Path(saved['assignedSkillPath'])
+        valid = (saved['reviewPolicy']==REVIEW_POLICY and
+                 saved['startPromptSha256']==sha(START_PROMPT) and
+                 saved['skillSha256']==sha(START_PROMPT.with_name('SKILL.md')) and
+                 snapshot.resolve().is_relative_to((artifacts/'skills').resolve()) and
+                 sha(snapshot)==saved['skillSha256'] and
+                 sha(artifacts/'SKILL.md')==saved['skillSha256'] and
+                 sha(artifacts/'START_PROMPT.txt')==saved['generatedPromptSha256'])
+    except (OSError,ValueError,KeyError,TypeError):
+        valid = False
+    if not valid:
+        raise Problem('Prepared instructions are outdated or changed. Repeat preparation before reserving a new launch; preserve existing snapshots.',409)
+
+
 def prepare(store, identifier):
     job = store.job(identifier)
-    if job['state'] not in ('preparing','prepared','launching'):
+    if job['state']=='launching':
+        raise Problem('A launch is already reserved; reconcile it using its saved prompt instead of preparing again.',409)
+    if job['state'] not in ('preparing','prepared'):
         raise Problem('Claim this queued job before preparing it.')
     r = job['request']
     destination = Path(r['destination'])
@@ -122,14 +182,8 @@ def prepare(store, identifier):
             shutil.copy2(source,target)
             if sha(target)!=f['sha256']:
                 raise Problem('Copied file failed hash verification: '+f['path'])
-    prompt,prompt_file,skill_file = render_worker_prompt(job)
     artifacts = store.data/'jobs'/identifier
-    artifacts.mkdir(parents=True,exist_ok=True)
-    (artifacts/'START_PROMPT.txt').write_text(prompt)
-    (artifacts/'SKILL.md').write_bytes(skill_file.read_bytes())
-    atomic_json(artifacts/'provenance.json',dict(startPromptPath=str(prompt_file),
-        startPromptSha256=sha(prompt_file),skillPath=str(skill_file),skillSha256=sha(skill_file),
-        generatedPromptSha256=sha(artifacts/'START_PROMPT.txt'),preparedAt=now()))
+    save_worker_prompt(job,artifacts)
     atomic_json(destination/'LAUNCH_SETTINGS.json',r)
     (destination/'.gitignore').touch(exist_ok=True)
     return store.patch(identifier,state='prepared',error=None)
@@ -147,6 +201,7 @@ def reserve_launch(store, identifier, expected_revision):
         raise Problem('Only a prepared job with its project recorded can start a launch.', 409)
     store.model_selection(job['request']['selection'])
     engine.require_launch_approval(store, job)
+    require_current_prompt(store.data/'jobs'/identifier)
     return store.patch(identifier, state='launching')
 
 
@@ -185,8 +240,13 @@ def record_review(store, identifier, review):
     if not review.get('summary') or not review.get('commit'):
         raise Problem('Record a summary and reviewed commit.')
     if verdict=='verified_complete':
-        if set(review.get('areas',{}))!=AREAS or not all(review['areas'].values()):
+        import completion_review
+        completion_review.require_acceptance(store, job, review)
+        areas=review.get('areas')
+        if not isinstance(areas,dict) or set(areas)!=AREAS or not all(isinstance(x,str) and x.strip() for x in areas.values()):
             raise Problem('Completion needs evidence for every required deliverable area.')
+        if review.get('reviewPolicy',REVIEW_POLICY)!=REVIEW_POLICY:
+            raise Problem('Review policy is outdated; review the current outcome areas.')
         with store.connect() as c:
             cutoff=(job.get('observation') or {}).get('monitoringSince','')
             checks = c.execute('SELECT * FROM checks WHERE job=? AND time>=?',(identifier,cutoff)).fetchall()
@@ -202,8 +262,12 @@ def record_review(store, identifier, review):
             raise Problem('Tracked work differs from the reviewed commit.')
         if any(sha(x['log_path'])!=x['log_sha256'] for x in checks):
             raise Problem('A recorded check log changed.')
+    review['reviewPolicy']=REVIEW_POLICY
     review['reviewedAt']=now()
-    return store.patch(identifier,state=verdict,review=review,error=None)
+    result = store.patch(identifier,state=verdict,review=review,error=None)
+    # Independent-result intake fulfills only its exact audit request. A newer
+    # operator request must survive recording an earlier accepted verdict.
+    return result
 
 
 def run_check(store, identifier, command, owner, epoch):
@@ -238,12 +302,21 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--owner', required=True)
     p.add_argument('--epoch', required=True, type=int)
-    p.add_argument('action',choices=['pending','jobs','job','claim','resume','usage-retry','prepare','project','launching','thread','observe','review','check','catalog','catalog_status','worker-control','attention','recovery'])
+    p.add_argument('action',choices=['pending','jobs','job','claim','resume','usage-retry','prepare','project','launching','thread','observe','review','completion-review','check','catalog','catalog_status','worker-control','attention','recovery'])
     p.add_argument('id',nargs='?')
     p.add_argument('command',nargs=argparse.REMAINDER)
     args=p.parse_args()
     store=Store()
     import engine
+    if args.action=='completion-review':
+        import completion_review
+        try:
+            payload=json.load(sys.stdin) if args.id in ('prepare','record','result','cancel','sent') else None
+            result=completion_review.dispatch(store,args.owner,args.epoch,args.id,args.command[0] if args.command else None,payload)
+            print(json.dumps(result,indent=2))
+        except (Problem,OSError,ValueError,KeyError,TypeError) as e:
+            print(json.dumps({'error':str(e)}),file=sys.stderr);raise SystemExit(1)
+        return
     if args.action=='usage-retry':
         import usage_retry
         try:

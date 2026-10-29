@@ -485,7 +485,7 @@ def plan(s):
     config=s.config(); jobs=s.jobs(); active=[j for j in jobs if j['state'] in SLOTS]
     manual=config.get('launchMode','manual')=='manual'
     queued=sorted((j for j in jobs if j['state']=='queued'),key=lambda j:j['created'])
-    resumes=sorted((j for j in jobs if j['state']=='usage_limited' or (j['state']=='waiting' and ((j.get('observation') or {}).get('checkpointPaused') or (j.get('observation') or {}).get('operatorResumeRequested')))),key=lambda j:j['created'])
+    resumes=sorted((j for j in jobs if j['state']=='usage_limited' or (j['state']=='waiting' and ((j.get('observation') or {}).get('checkpointPaused') or (j.get('observation') or {}).get('operatorResumeRequested') or (j.get('thread_id') and (j.get('observation') or {}).get('unfinishedContinuationRequested'))))),key=lambda j:j['created'])
     replacements=sorted((j for j in jobs if j['state']=='replacement_ready'),key=lambda j:j['created'])
     current=latest(s,'quota'); predictions=forecast(s)
     capacity=max(0,config.get('maxParallel',2)-len(active)); decisions=[]

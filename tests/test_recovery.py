@@ -88,8 +88,9 @@ class RecoveryCase(unittest.TestCase):
         self.assertNotIn(self.old,prompt);self.assertNotIn('OLD_CONVERSATION_SENTINEL',prompt)
         self.assertNotIn('Synthetic repair step',prompt);self.assertNotIn('Job ID:',prompt)
         from controller import render_worker_prompt
-        normal,base,_=render_worker_prompt(self.s.job(self.j['id']))
-        task=base.read_text()
+        provenance=json.loads((Path(r['promptPath']).parent/'provenance.json').read_text())
+        normal,base,skill=render_worker_prompt(self.s.job(self.j['id']),skill_path=provenance['assignedSkillPath'])
+        task=base.read_text().replace(str(skill),provenance['assignedSkillPath'])
         self.assertIn('Another agent has already worked on this project',prompt)
         self.assertIn('Inspect and verify what is already there',prompt)
         self.assertEqual(prompt.split('--- BEGIN TASK PROMPT ---\n',1)[1].split('\n--- END TASK PROMPT ---',1)[0],task)
@@ -103,6 +104,32 @@ class RecoveryCase(unittest.TestCase):
         self.enable('replace');r=self.report();self.retired['archived']=False
         with patch.object(self.s,'cli',side_effect=self.cli):
             with self.assertRaises(Problem):self.call('prepare',r['id'])
+
+    def test_stale_replacement_instructions_require_refresh_and_keep_history(self):
+        source=self.root/'instruction-source';source.mkdir()
+        template=source/'START_PROMPT.md';template.write_text('Synthetic task.\n')
+        skill=source/'SKILL.md';skill.write_text('Synthetic first assignment.\n')
+        with patch('controller.START_PROMPT',template):
+            r=self.ready();artifacts=Path(r['promptPath']).parent
+            first_prompt=Path(r['promptPath']).read_bytes()
+            first=json.loads((artifacts/'provenance.json').read_text())
+            first_skill=Path(first['assignedSkillPath']).read_bytes()
+            skill.write_text('Synthetic revised assignment.\n')
+            self.quota(1)
+            with patch.object(self.s,'cli',side_effect=self.cli) as calls:
+                with self.assertRaises(Problem):self.call('launch',r['id'])
+                calls.assert_not_called()
+                self.assertEqual(recovery.get(self.s,r['id'])['phase'],'replacement_ready')
+                refreshed=self.call('prepare',r['id'])
+                self.assertEqual(refreshed['id'],r['id'])
+                history=next((artifacts/'instruction-history').iterdir())
+                self.assertEqual((history/'START_PROMPT.txt').read_bytes(),first_prompt)
+                self.assertEqual(Path(first['assignedSkillPath']).read_bytes(),first_skill)
+                self.call('launch',r['id'])
+                saved_prompt=Path(r['promptPath']).read_bytes()
+                with self.assertRaises(Problem):self.call('prepare',r['id'])
+                self.assertEqual(Path(r['promptPath']).read_bytes(),saved_prompt)
+
     def test_changed_original_blocks_replacement_without_overwriting_it(self):
         self.enable('replace');r=self.report();original=self.dest/'originals/vendor/fw.bin';original.write_bytes(b'changed')
         with patch.object(self.s,'cli',side_effect=self.cli):

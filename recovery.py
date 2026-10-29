@@ -255,11 +255,10 @@ def dispatch(s, owner, epoch, action, identifier=None, payload=None):
             phase='repair_pending' if ticket['repair_attempts']<rule['maxRepairAttempts'] else 'retire_pending'
             return _update(s,identifier,phase=phase,result={'evidence':evidence,'working':False})
         if action=='prepare':
-            if ticket['phase']=='replacement_ready':return ticket|{'promptPath':str(_artifact(s,ticket)/'START_PROMPT.txt')}
-            if ticket['phase']!='retire_pending':raise Problem('Finish the authorized repair procedure before replacing the thread.',409)
+            if ticket['phase'] not in ('retire_pending','replacement_ready'):raise Problem('Finish the authorized repair procedure before replacing the thread.',409)
             if ticket['origin'] != 'operator':_bounds(s,job['id'],ticket['policy'])
             _retired(s,ticket['worker_thread'])
-            from controller import render_worker_prompt, atomic_json
+            from controller import save_worker_prompt
             destination=Path(job['request']['destination']).resolve()
             if not destination.is_relative_to(s.projects) or not destination.is_dir():raise Problem('The existing project directory is unavailable.')
             marker=destination/'LAUNCH_REQUEST.json'
@@ -268,14 +267,14 @@ def dispatch(s, owner, epoch, action, identifier=None, payload=None):
                 original=(destination/'originals'/source['path']).resolve()
                 if not original.is_relative_to(destination) or not original.is_file() or sha(original)!=source['sha256']:
                     raise Problem('An original is missing or changed; preserve the workspace and investigate before replacement.')
-            prompt,base,skill=render_worker_prompt(job,continuation=True)
-            artifacts=_artifact(s,ticket);artifacts.mkdir(parents=True,exist_ok=True)
-            (artifacts/'START_PROMPT.txt').write_text(prompt);(artifacts/'SKILL.md').write_bytes(skill.read_bytes())
-            atomic_json(artifacts/'provenance.json',{'basePromptSha256':sha(base),'skillSha256':sha(skill),'promptSha256':sha(artifacts/'START_PROMPT.txt'),'createdAt':now()})
+            artifacts=_artifact(s,ticket)
+            save_worker_prompt(job,artifacts,continuation=True)
             s.patch(job['id'],state='replacement_ready')
             return _update(s,identifier,phase='replacement_ready')|{'promptPath':str(artifacts/'START_PROMPT.txt')}
         if action=='launch':
             if ticket['phase']!='replacement_ready':raise Problem('Do not repeat an uncertain replacement launch; reconcile T3 threads first.',409)
+            from controller import require_current_prompt
+            require_current_prompt(_artifact(s,ticket))
             _retired(s,ticket['worker_thread'])
             if ticket['origin'] != 'operator':_bounds(s,job['id'],ticket['policy'])
             s.model_selection(job['request']['selection'])

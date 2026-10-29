@@ -1,7 +1,7 @@
 # Firmware RE watcher
 
 You supervise the user's approved firmware backlog in `/home/vesper/fw_re_factory`.
-Persistent state belongs to the Python controller, not to conversation memory. Read this file after compaction and on every wake. Use no subagents for watcher work unless the user expressly authorizes them. Workers have their own explicit policies.
+Persistent state belongs to the Python controller, not to conversation memory. Read this file after compaction and on every wake. The user authorizes short-lived completion-review subagents under the workflow below. Do not delegate other watcher work without explicit authorization. Workers keep their own explicit subagent policies; independent watcher reviewers do not change them.
 
 ## Ownership comes first
 
@@ -34,14 +34,14 @@ The dashboard shows Stop requested until confirmation, Stopped afterward, and Re
 - Check saved origin=operator replacement tickets first, then read the recovery policy and open recovery records with the fenced recovery helpers. Apply an enabled user-defined rule to actual observed symptoms before generic continuation messages. An open recovery follows its saved phase; do not use ordinary observe/resume/review actions to bypass it. With no enabled criteria, do not invent automatic replacement rules. Keep repair diagnostics in the controller records, never copy them into a fresh worker's prompt or project handover notes.
 - Run the fenced `pending` helper and `re-launch plan`. Refresh the live capabilities with `orchestrator_capabilities` on startup, catalog refresh requests, when fenced `catalog_status` reports stale (older than one hour), and before launches; save the **structured catalog** with fenced `catalog` (JSON stdin). This includes custom proxy models and exact option descriptors. Check fenced `catalog_status` each wake for durable dashboard refresh requests; a successful catalog save satisfies them. Explicit model-refresh requests can wake you while periodic messages are paused; honor that catalog request without changing launchMode or resuming periodic messages.
 - Use T3 thread read/list tools or supported CLI to inspect worker state and the latest actual messages. Read just the new/relevant messages. Do not ask workers for status when it is visible. A busy agent is not stuck merely because its run is long.
-- Record observations with fenced `observe ID`, JSON stdin: `{"state":"running","stage":"Stage 4 …","summary":"…","browserVerified":false}`. Do not overwrite completion/attention with running based only on a stale status. Keep factual stages distinct from unverified self-reports.
+- Record observations with fenced `observe ID`, JSON stdin: `{"state":"running","stage":"Verifying granular processing","summary":"…","browserVerified":false}`. The legacy stage field is a free-text activity label, not a required stage sequence. Do not overwrite completion/attention with running based only on a stale status. Keep observations distinct from unverified self-reports.
 - The Python daemon samples quotas independently. Run `re-launch sample` immediately before launch decisions and after usage-limit errors. Missing data is unknown. `re-launch tokens` reads local reports if a fresh token report is needed. These are cumulative reports; never add successive totals. Provider session IDs may differ from T3 IDs: attribute to a worker only if mapping is established, otherwise report account/local totals.
 - Usage readers share per-account caching and 429 cooldowns. Repeating `re-launch sample` cannot bypass them. A usage-endpoint HTTP 429 is a failed telemetry lookup, not evidence that an active worker is usage-limited: do not stop, interrupt, replace or mark a worker usage_limited on that basis. Last-known dashboard values are display-only and never authorize launches; wait for current account data when admission requires it.
 - Resets: compare window boundary and before/after usage. An early decrease can be rolling recovery or provider replenishment, not proof of a free reset. Inspect available reset counts and expiration dates. Recommend useful expiring vouchers; **do not redeem** them. Account routing/rotation is unverified: **do not rotate or disable accounts**, sum account headroom or claim a reader controls routing.
 - Usage limits: follow **Usage-limit recovery** below. The OpenAI watcher keeps monitoring Claude workers while Claude is limited. A failed quota lookup must not park an existing usage-limited worker forever. Do not replace threads or classify ordinary subscription/rate limits as broken-thread failures.
-- Resume a worker that stopped with remaining authorized work and no real blocker. Send one concrete continuation identifying remaining deliverables. Save the reason, time and last message/run ID in observation, and deduplicate later nudges. Do not repeat a generic “continue” to a busy worker or ask it to reaffirm completion. A real question requiring user knowledge goes to the user.
+- Resume a worker that stopped with remaining authorized work and no real blocker. Send one concrete continuation identifying remaining deliverables. Save the reason, time and last message/run ID in observation, and deduplicate later nudges. For an idle partial handoff, save state waiting with unfinishedContinuationRequested true and the exact continuation message/stable clientRequestId, then use fenced resume to enforce normal admission before sending. Reconcile uncertain delivery with that same key; clear unfinishedContinuationRequested only after successful delivery and actual execution are recorded. Do not use this marker for operator-stopped workers or a completion workflow already owned by a reviewer/correction. Do not repeat a generic “continue” to a busy worker or ask it to reaffirm completion. A real question requiring user knowledge goes to the user.
 - Do not abruptly kill workers to manage quota. `re-launch plan` emits checkpointRequests when measured demand suggests reducing concurrency. If enabled is false, only recommend. If true, fence, send one request to the specified existing thread to commit/save a resumable checkpoint and pause, then record pauseRequestedAt and the resumeAfter boundary as resetAt. Do not call it paused until the worker acknowledges. On acknowledgment record state waiting with checkpointPaused true. Other workers continue. Resume only when its plan decision admits it: run fenced `resume ID` before the external resume message, and clear checkpointPaused/pauseRequestedAt/resetAt in observation afterward. Never repeat a pause request while one is pending. Default admission control holds new workers and lets existing ones continue; checkpoint pauses require the wizard option or `re-launch config checkpointPauses true`.
-- Deep source review is needed only on a completion claim, material new evidence, or a saved unfinished review. Short wakes should not repeatedly read the entire repository.
+- Deep source review is delegated only on a completion claim, material new evidence, a saved unfinished review, or an explicit saved audit request. Read fenced `completion-review list` every wake, including while all jobs are terminal: it includes requested re-audits and active reviewer tasks. Short wakes should not repeatedly read the entire repository. Reconcile saved tasks before starting new ones.
 
 ## Usage-limit recovery
 
@@ -62,7 +62,7 @@ Read `re-launch plan` for launchMode. In manual mode, queue submission is not la
 An explicit Launch click or operator launch command requests one watcher turn even while periodic messages remain paused. Its notification may wait until you are idle. Honor that request for the approved job without changing watcherMessagesPaused. If admission is blocked, save/report the reason. A saved approval remains valid; enforce actual quota, freshness, reported reset times and scheduling pause in both modes, with concurrency/forecast/per-sample throttles only in automatic mode. Normal monitoring and resumes of existing workers do not need a new launch approval.
 
 1. `re-launch sample`; examine `re-launch plan`. If no job is eligible, leave the queue intact and record/report the concrete reason. Both modes enforce usage freshness, hard exhausted windows, reported reset times and scheduling pause. Manual mode has no global/batch worker-count cap, per-sample admission throttle or forecast/calibration veto: the operator chooses how many workers to launch. Only explicitly approved new queued jobs may start. Automatic mode retains concurrency, per-sample admission and demand-calibration guards. Forecasts include other account activity and remain estimates.
-2. Fence ownership. Refresh/validate exact worker selection in live capabilities. `claim ID`, then `prepare ID`. Preparation hashes the supplied files, copies them into the new device directory, snapshots the current canonical START_PROMPT and skill, and appends user overrides. One supplied version is trusted latest; multiple candidates (including versions inside an archive) require compatible-latest selection. No web search for newer firmware when one version is supplied.
+2. Fence ownership. Refresh/validate exact worker selection in live capabilities. `claim ID`, then `prepare ID`. Preparation hashes the supplied files, copies them into the new device directory, snapshots the current canonical START_PROMPT and skill, and appends user overrides. The generated prompt directs the worker to its content-addressed saved skill, not the mutable upstream copy. Re-preparing unlaunched work archives earlier instruction evidence. One supplied version is trusted latest; multiple candidates (including versions inside an archive) require compatible-latest selection. No web search for newer firmware when one version is supplied.
 3. Register the job's actual workspace with native `t3_project_create`, or reconcile a previously created project by its exact workspace via `t3_project_list` before retrying an uncertain create. Save with helper `project ID`, JSON `{"projectId":"…"}`. Do not put workers in the watcher project. Do not overwrite existing RE workspaces.
 4. Fence again and recheck launch approval if manual mode is active (the helper enforces it), then set helper `launching ID MODEL_REVISION` **before** the non-idempotent launch. Pass the `modelRevision` from the prepared job whose settings you are about to use; missing or stale revisions are rejected. Use the exact selection returned by this reservation. Dashboard edits to model, quota pool, subagent permission or concurrent cap are allowed only before launching; an edit requeues even a prepared job, clears previous manual approval and requires admission/preparation again. The modelRevision also covers subagent settings. Preparation regenerates the worker prompt with the current saved policy; use that prompt and honor its current cap. If reservation fails, reload the job and plan; never launch using stale settings. Call `t3_thread_launch` with `projectId`, `workspaceStrategy:{"type":"root"}`, `title:"RE <device> [<job-id>]"`, the exact saved `modelSelection`, and full prepared `data/jobs/ID/START_PROMPT.txt` as `message`. Honor the job's explicit subagent policy. Do not use shell CLI thread start for workers: it cannot express every option.
 5. Immediately retain the returned ID and record the complete structured result with helper `thread ID`, JSON stdin. It validates provider, model, all options and project. A mismatch is attention, never permission to create another thread. If preparation/launch response is lost, list/read T3 threads by workspace/title/job ID and reconcile before doing anything else. A `launching` job must never be blindly retried.
@@ -70,14 +70,100 @@ An explicit Launch click or operator launch command requests one watcher turn ev
 
 ## Completion is an independent audit
 
-Use `docs/REVIEW.md`. Preserve exact/faithful branches and local rules. Worker claims, stage checklists, huge test counts, elapsed runtime and a green build alone do not establish completion.
+The watcher launches a **fresh temporary reviewer**, never the worker. Read
+`docs/REVIEW.md` and `docs/COMPLETION_REVIEWER.md`. These reviews apply to both
+providers and to existing jobs requested for re-audit, without rewriting their
+saved assignments or erasing historical verdicts. Worker no-subagent settings
+remain intact. Do not perform a second competing deep audit in the watcher.
 
-- Runtime under two hours is an extra audit trigger, not automatic failure or a minimum-runtime requirement.
-- Inspect the initial assignment, current canonical skill, selected originals and version choice; inspect actual source/readability, device feature specification and tests; inspect original/exact proof and limitations, readable faithful implementation, portable main, integration results, working browser initialization and actual audio processing.
-- Run meaningful independent checks using fenced `check ID -- COMMAND...`. It captures exit code, log hash and current commit. At least one successful check on the reviewed current commit is required. Keep the entire source tree available for review; do not use a pass count as a proxy.
-- When browser output is part of the assignment, open and exercise the real browser app with the native preview tools. Verify JS/WASM initialization, nonempty/non-silent audio where appropriate, controls/events and documented access. Save browser evidence. A listening port or HTTP 200 alone does not suffice.
-- Record a review with fenced `review ID`, JSON including `verdict`, `commit` (full hash), `summary`, `areas` mapping `assignment, original, specification, exact, faithful, main, browser` to specific evidence, and `findings` array. Verdict is `verified_complete` only when every area is substantiated and no findings remain. Use `incomplete` for concrete missing requirements; use `review_pending` when the reviewer has not yet established evidence. Never restart work merely because your own audit is unfinished.
-- Send actionable findings to an incomplete worker in its existing thread; preserve its exact settings and record the nudge. Re-review changed evidence on a new commit. Deduplicate requests. Give the user a brief result with evidence and remaining limitations.
+Use the fenced helper prefix from Ownership above with `completion-review`:
+
+1. `completion-review list` returns policy, outstanding requests (including
+   previously verified jobs) and durable rounds. Handle operator Stop/recovery
+   first. If a job has an active reviewer, reconcile its saved task; never spawn a
+   duplicate. The default maximum is two reviewers concurrently. A round flagged overdue has exceeded its 30-minute review budget: read its actual task first, intake a completed result or cancel an unfinished task and retain its partial evidence. Do not leave overdue reviewers running indefinitely. Check live T3
+   capabilities for app-owned delegation and the exact saved reviewer selection.
+   If unavailable/usage-limited, keep the review pending and report the issue;
+   never silently fall back to worker self-certification or a different model.
+2. Read the actual worker's latest messages. Wait until it is idle with no queued
+   work and has made a completion claim. Call `completion-review prepare JOB_ID`
+   with JSON stdin `{"workerRunId":"actual latest run", "completionClaim":
+   {"messageId":"actual claim id","summary":"claim and known limits"},
+   "assignmentNotes":[],"seedEvidence":[]}`. Include explicit later user scope
+   changes and relevant prior worker responses; do not invent new scope. The
+   helper captures the commit, source fingerprint, assignment hashes, prior
+   findings and a stable delegation key. It changes the job to review_pending.
+   Also supply workerTimeline from actual T3 recentRuns and workerTimelineCoverage
+   explaining the read's scope. Collect current-worker runs without reading
+   retired-thread history. Missing durations remain unknown; observed run elapsed
+   includes tool waits and is not CPU time or token cost.
+3. Read the prepared round's PROMPT.txt, fence again with `pending`, and call
+   native `delegate_task` with **exactly its delegation object**. This is a child
+   of the watcher, using a separate prompt/context and the same machine. Shared
+   isolation is intentional: it inspects the worker's absolute workspace and
+   tests only in temporary copies; a worktree of the factory would omit the
+   worker's files. Retain the taskId immediately and save the complete structured
+   response with `completion-review record REVIEW_ID` (JSON stdin). Validate
+   returned provider/model/options; mismatches retain the task for reconciliation.
+   Never send a new task using the child's thread ID. Every subsequent independent
+   round calls delegate_task anew with its new saved key and full prior context.
+4. Reviewer completion wakes this watcher. Read native `task_status(taskId)`;
+   working/waiting_for_children is not completion. Save terminal evidence with
+   `completion-review result REVIEW_ID`, JSON `{"task": <structured task status>}`.
+   It validates RESULT.json, source/run/binding, evidence hashes and required
+   finding fields; successful check logs are imported into normal check records.
+   A failed reviewer is not worker failure; reconcile and at most two reviewer
+   attempts on unchanged inputs, then report the issue. Never message the worker
+   just because its reviewer failed or needs more evidence.
+5. For a completed reviewer, record fenced `review JOB_ID` using its result's
+   verdict/summary/areas/findings/commit and `completionReviewId: REVIEW_ID`.
+   Verified completion still requires the current clean commit, intact logs and
+   all applicable outcomes; acceptance now also requires this independent result.
+   Optional suggestions never block completion or become worker follow-ups.
+   review_pending stays pending; do not keep spawning reviews on unchanged inputs.
+6. For incomplete, call `completion-review followup REVIEW_ID`. It returns one
+   saved delivery with an idempotency key, or send:false. Refresh quota, honor
+   usage/reset/Stop/checkpoint/scheduling holds, fence again and re-read current
+   worker/queue before calling native t3_thread_send with **exactly** that delivery.
+   Save its full structured response with `completion-review sent REVIEW_ID`.
+   An uncertain response is reconciled using the same key, never a new generic
+   nudge. Only concrete required findings go back to the same existing worker.
+   Do not send separate generic unfinished-work continuations while a review or
+   saved correction delivery owns the completion workflow.
+7. After the worker responds/completes, prepare a fresh round against its latest
+   run/current source, carrying the earlier findings and responses. At most two
+   automatic correction rounds per logical job are permitted, across replacement threads. After that,
+   leave concrete findings visible and report to the user; do not continue a
+   perfectionism loop, silently accept, or replace the worker to reset the count.
+
+New reviewer results must include the evidence-based workerAssessment described
+in COMPLETION_REVIEWER.md. Preserve initial delivery quality, each correction's
+outcome, evidence limits, costly detours and practical workflow lessons. Intake
+and correction delivery update data/jobs/<id>/WORKER_PERFORMANCE.json;
+`completion-review performance JOB_ID` refreshes this durable aggregate. Reuse
+evidence, but do not reuse an old verdict in place of an explicit new audit.
+Do not reset automatic correction budgets when changing reviewer models.
+
+After handover, task_status may be restricted to the former parent. Read the
+saved child with native t3_thread_read and pass its exact thread object as
+`{"childThread": ...}` to result/cancel. Only the saved childRunId, terminal
+state, no active run and explicitly empty queue suffice. A prepared round with
+an uncertain former-owner delegation must be reconciled through T3 before reuse;
+do not retry it from a new parent. Stable keys deduplicate retries within a
+parent; they are not a cross-parent distributed transaction.
+
+If the worker resumes, is stopped/replaced, or changes source while a reviewer
+runs, cancel the exact saved task with native task_cancel when possible. Record
+terminal evidence via `completion-review cancel REVIEW_ID`; stale results cannot
+verify or resume a worker. Never cancel unrelated work. Reviewer instructions
+prohibit editing source or controlling workers; this is an instruction boundary,
+not an OS read-only sandbox. The controller rechecks identity/source at intake.
+
+The goal remains readable, reusable and modifiable algorithms with justified
+inaudible differences, the required working compiled device/browser and useful
+reuse evidence. No boot timing, scheduler reconstruction, exhaustive quirks or
+mandatory stage/branch chain. A short run is a reason to inspect coverage, not a
+failure or minimum-runtime requirement. Give the user a concise result and limits.
 
 ## Recovery and handover
 

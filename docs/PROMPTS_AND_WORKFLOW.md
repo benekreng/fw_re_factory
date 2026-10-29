@@ -1,6 +1,6 @@
 # fw_re_factory: worker prompts, watcher prompts and the workflow
 
-This guide includes manual launch mode. It explains what each agent receives and how the Python controller works with the watcher. It reflects the implementation as of 25 October 2026. Examples are documentation, not commands to launch or resume a worker.
+This guide includes manual launch mode. It explains what each agent receives and how the Python controller works with the watcher. It reflects the implementation as of 26 October 2026. Examples are documentation, not commands to launch or resume a worker.
 
 This factory depends on [benekreng/bens_skills](https://github.com/benekreng/bens_skills) for the reusable worker task and the complete `firmware-rewrite` skill. See the [README dependency section](../README.md#skill-dependency) for required files and local paths.
 
@@ -16,71 +16,63 @@ The database is the persistent record. The watcher can be replaced without recre
 
 ## Worker prompt
 
-A normal launch combines two pieces: the reusable standard task prompt, followed by the generated run details. The full skill is referenced by path; its contents are not pasted into the message. Preparation saves a separate skill snapshot and prompt hashes for provenance.
+A normal launch combines two pieces: the reusable standard task prompt, followed by the generated run details. The full skill is referenced by path; its contents are not pasted into the message. Preparation saves a content-addressed assigned skill snapshot and prompt hashes for provenance; the generated message points to that saved skill.
 
 The standard task comes from `/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md`. The sections below reproduce that current template, split up for explanation. The live file and renderer remain the sources used for future launches; this guide is a readable explanation, not another prompt template.
 
-### 1. Task and skill
+### 1. Standard task, resources, working rules and handoff
+
+The standard task is:
 
 ```text
-Reverse engineer the firmware in this folder and rewrite it. Follow the firmware-rewrite skill from start to finish, through every stage. Read /home/vesper/RE/bens_skills/firmware-rewrite/SKILL.md. Its source file is https://github.com/benekreng/bens_skills/blob/main/firmware-rewrite/SKILL.md. If the local file is missing, create its parent directory and download only that file using the authenticated GitHub CLI: `gh api --method GET 'repos/benekreng/bens_skills/contents/firmware-rewrite/SKILL.md?ref=main' -H 'Accept: application/vnd.github.raw+json'`. Save the successful response to the local path, then read it. Do not clone the skills repository.
+Recover the device from the firmware in this folder as a working compiled C implementation, with its important processing algorithms in a readable, reusable and modifiable library. Follow the firmware-rewrite skill's goals and deliverables; choose your own method.
 
-Device: Figure it out from this directory.
+Read /home/vesper/RE/bens_skills/firmware-rewrite/SKILL.md. Its source file is https://github.com/benekreng/bens_skills/blob/main/firmware-rewrite/SKILL.md. If the local file is missing, create its parent directory and download only that file using the authenticated GitHub CLI: `gh api --method GET 'repos/benekreng/bens_skills/contents/firmware-rewrite/SKILL.md?ref=main' -H 'Accept: application/vnd.github.raw+json'`. Save the successful response to the local path, then read it. Do not clone the skills repository. If run details name a saved skill snapshot, use that snapshot instead; do not substitute a newer download if it is unavailable.
 
-What's here: everything you need is in the current directory: the firmware (an update file, a binary or a dump) and whatever documentation I found. Start by listing what's there and identifying each file.
+Device: identify it from this directory unless the run details specify it.
 
-The result: the library on branch `main` is the main deliverable, for people and agents who want to understand how the device works or build its features into their own projects. Like the rest of the project, it stays on this machine: don't copy it anywhere else.
-- Target host for `main`: none; use the skill's defaults.
-- Quirk review: in the final report; don't stop for it.
+Start by identifying the supplied firmware and documentation. Work here; this directory becomes the project repository. The library on branch `main` is the main deliverable, with the complete device playable in the browser as compiled C using that library. Surrounding functionality may use straightforward recovered C or existing components through adapters; it does not need the same readable rewrite. The rewritten device must run without executing original firmware in a CPU emulator or instruction interpreter. Emulation remains useful for investigation, verification and original/library A/B.
+
+Setup and resources:
+- Preserve supplied originals, existing user work and unrelated changes; work on copies. Never push or upload this project or firmware, or send them to online analysis services. Only the device-neutral shared-resource contributions described below may be pushed.
+- Public research is allowed. Save useful sources under research/sources/. You may install missing tools; record significant installations in STATUS.md.
+- Before building infrastructure, look for suitable tools in the shared resources, then elsewhere. Build only what the processing or its verification needs.
+- Shared resources: https://github.com/benekreng/fw_re holds tested components from earlier runs. Read its README. Clone it into resources/ if needed, add resources/ to .gitignore, and use a branch run/<device>. Never change its main branch or another run's branch.
+- Put reusable RE infrastructure and fixes in that shared copy and use them from this project. Each contribution needs a short README covering its interface, dependencies and limits, plus a test using synthetic or public inputs without this device's firmware. Include no vendor firmware bytes, decompiled or rewritten vendor code, device assets or firmware-dependent fixtures. Commit and push only those device-neutral contributions on your run branch; record their commit IDs. Keep device-specific code and reuse/ in this local project. Contributing tools is not a reason to expand the assignment.
+
+Work autonomously toward the skill's deliverables without routine approval requests. Keep STATUS.md concise, note the assigned skill path there, and commit useful increments. After compaction, reread the assigned skill and current project status. Document genuine blockers and unresolved issues plainly, and advance other useful work where possible.
+
+Give a final report covering the recovered algorithms, verification and limitations, how to build/use/modify the library, deliberate differences and safety fixes, reuse/, the browser address and remaining gaps. Leave the browser server running. Do not invent mandatory stages, a three-version comparison or an exhaustive quirk-classification prerequisite.
 ```
 
-Only the skill file is fetched if it is missing. The authenticated GitHub command supports the private repository; no clone of `bens_skills` is requested. The worker still reads the full skill from the local path.
+The skill defines the outcomes: actual algorithms and their operating behavior,
+a readable/reusable/modifiable C library, justified perceptual fidelity, a
+device-like browser using that library with original/library A/B, and the reuse
+catalogue. Small numerical differences expected to be inaudible to human
+listeners during normal use are acceptable. Bit-exact output is not the goal.
 
-### 2. Setup, preservation and reuse
+The worker chooses its method. An exact intermediate implementation, boundary
+captures and original execution can help; a fixed stage chain, three separate
+versions and exhaustive quirk classification are not mandatory. The complete
+device behavior must run as compiled C, with clean algorithms in the library.
+Surrounding code may be straightforward recovered C or suitable existing code;
+it does not need the same readable rewrite. Host adapters replace hardware
+dependencies. Reference emulation is allowed, but the rewritten device must not
+execute original machine code in a CPU emulator or instruction interpreter.
 
-```text
-Setup:
-- Work in this directory. It becomes the project repository (run git init if there isn't one).
-- The files you find here are the originals. Never edit, move or delete them; work on copies.
-- Never push or upload this project or the firmware, and never send the firmware to online services. They belong to the vendor. Your branch of the shared resources below is the only thing you push.
-- You may search the web and download manuals, release notes and datasheets for stage 0 into research/sources/.
-- Before you write a tool from scratch, look for one: in the shared resources below, then on the web (for example an established emulator for the CPU). Build only what nothing covers, and note in STATUS.md what you looked at and why it didn't fit.
-- You may install missing tools with the system's package manager or pip. Record what you installed in STATUS.md.
-- Shared resources: https://github.com/benekreng/fw_re holds tested components from earlier runs; its README lists them. Clone it into resources/ in this folder, create a branch run/<device> in it, and add resources/ to .gitignore. Build against that copy. Commit your changes there with messages that say what changed and why, and push run/<device> after each commit. Never touch its main branch or other runs' branches.
-- Contribute reusable RE infrastructure to resources/: both fixes to existing components and new tools that other firmware projects could use, such as CPU/peripheral models, image parsers, experiment drivers and comparison harnesses. Put the implementation in the shared repository and use it from this project. Each contribution needs a short README explaining its purpose, interface, dependencies and limits, plus a test that runs on synthetic or public inputs without this device's firmware. Include no vendor firmware bytes, decompiled or rewritten vendor code, device assets, or firmware-dependent test fixtures. Keep device-specific code and the device's reuse/ catalogue in this local project. Record contributions and their shared commit IDs in STATUS.md.
-```
+Preparation snapshots the skill under
+`data/jobs/ID/skills/<sha256>.md` and substitutes that assigned path in both the
+task and run details. The worker rereads that snapshot after compaction; it must
+not silently download a newer skill over a missing assigned snapshot. Source
+paths and hashes remain in provenance. Only standalone use of the standard task,
+without assigned run details, uses the single-file upstream download fallback.
 
-The two repositories serve different purposes. `bens_skills` supplies instructions, accessed as one file. `fw_re` supplies reusable code, so workers clone it into `resources/` and work on a device-specific shared-resource branch. Device firmware and rewritten vendor code stay in the local device project. Shared tests must work with synthetic or public inputs independently of that firmware.
+The two dependencies serve different purposes: `bens_skills` supplies instruction
+files; `fw_re` supplies reusable infrastructure. Only device-neutral shared
+contributions with synthetic/public tests may be pushed. Vendor-derived
+algorithms and the device's `reuse/` catalogue stay in the local device project.
 
-### 3. How to continue working
-
-```text
-How to run:
-- Don't ask me questions and don't wait for approval. Include the quirk review in the final report and continue through the remaining stages. The skill fixes the goal.
-- At the end of each stage: commit, update STATUS.md, give me a short report in plain words, and start the next stage in the same response. Ending your turn stops the run.
-- At the start of each stage and after every context compaction, reread the skill's SKILL.md in full: the ground rules and the current stage. Note its path at the top of STATUS.md so you can find it. Don't work from memory or a summary of it. Before you report a stage done, check each point of its "Done when" line and say in the report how you checked it.
-- Stop only if no readable firmware image can be obtained at all. Anything else goes into STATUS.md as an open question, and you carry on.
-```
-
-Quirk review belongs in the final report. The old exception telling the worker to stop for that review has been removed. User-selected subagent restrictions in the run details override the skill's default delegation requirements.
-
-### 4. Final report and browser handoff
-
-```text
-When the last stage is done, give me a final report:
-- what works, and how each version was checked;
-- how the three versions compare: size, longest functions, speed, and what each keeps of the original;
-- the quirks, sorted into character, edge case and broken in normal use (broken first); the unsafe bugs fixed; where the original disagrees with its documentation;
-- what is unknown;
-- how to use the library from another project, with the smallest working example;
-- what's in reuse/: the components, and the few ideas and patterns most worth knowing;
-- where the code is still harder to read or reuse than it should be, and why.
-Leave the browser app's server running and give me its address.
-```
-
-The browser deliverable must be usable. The watcher separately checks initialization, processing and controls rather than accepting a listening port as completion evidence.
-
-### 5. Generated run details
+### 2. Generated run details
 
 [`render_worker_prompt()` in controller.py](../controller.py) appends the actual device assignment. This is configuration for the task above, not another RE stage. A Bohm example with subagents disabled is:
 
@@ -88,28 +80,28 @@ The browser deliverable must be usable. The watcher separately checks initializa
 Run details (these settings override the defaults above):
 Device: Ohmforce Bohm
 Workspace: /home/vesper/RE/ohmforce_bohm
-Skill path: /home/vesper/RE/bens_skills/firmware-rewrite/SKILL.md
+Skill path: /home/vesper/fw_re_factory/data/jobs/<job-id>/skills/<sha256>.md
 Immutable selected originals are under originals/; LAUNCH_REQUEST.json records their hashes, roles and source URLs. Inventory these paths before analysis.
 If one firmware candidate was selected, treat its version as the latest; do not search for newer firmware. If that candidate is an archive containing multiple firmware versions, inspect those candidates and use the newest appropriate version. If multiple firmware candidates were selected, identify and use the newest appropriate supplied version for this device/hardware revision. Record the selection evidence; do not choose a bootloader or incompatible hardware variant as an application update. Continue the skill's device/manual research in either case.
 Target host: none; use the skill defaults
 Serve the browser app on port 19100 and leave it running. Give a working T3 preview or clear access instructions for the server machine.
 For every completion claim, cite the relevant artifact paths, rerunnable checks and remaining limitations.
-User subagent policy: NO subagents or delegated agents. Perform all work yourself. This explicitly overrides the skill parallel-agent and fresh-agent integration requirements. Document this exception and perform independent integration checks yourself; do not claim unchanged full skill compliance.
+User subagent policy: NO subagents or delegated agents. Perform all work and integration checks yourself.
 Selected files:
 - firmware: originals/ohm_force/bohm-eurorack-60cca68645b71ceba7e69426c3f8b06e400d0657.zip
 ```
 
-These details supply the directory, selected inputs, host, browser port and policy. They appear once, at the bottom. The worker prompt does not include the controller's internal job ID or instructions about being watched. Internal IDs remain available to the controller and watcher for tracking.
+These details supply the directory, selected inputs, host, browser port and policy. They appear once, at the bottom. The worker prompt adds no separate internal job-ID field or instructions about being watched; the assigned snapshot's filesystem path naturally contains the job ID. Internal IDs remain available to the controller and watcher for tracking.
 
 The version instruction is conditional: trust a single supplied candidate as latest, inspect multiple versions inside an archive, and select the newest compatible supplied application when multiple candidates exist. Device/manual research continues in all cases.
 
 Subagent policy has three forms:
 
-- **None:** do all work in the worker; explicitly document the exception to the skill's fresh-agent integration requirement and perform the checks yourself.
-- **Integration only:** one fresh integration agent at a time, solely for integration checks; no delegated RE or implementation.
-- **Allowed:** use the saved cap, including nested children.
+- **None:** do all work and integration checks in the worker. This is ordinary skill compliance; delegation is not mandatory.
+- **Integration only:** optional delegation for integration checks, at most one agent at a time; no delegated RE or implementation.
+- **Allowed:** optional delegation within the saved cap, including nested children.
 
-### 6. Model settings are separate from the text
+### 3. Model settings are separate from the text
 
 For the requested Bohm profile, T3 receives:
 
@@ -126,7 +118,7 @@ For the requested Bohm profile, T3 receives:
 
 Other requests use their own saved selection. Before launching begins, the dashboard can update that selection using T3’s capability descriptors, and change whether subagents are allowed and their concurrent limit (1–8, including nested children), or restrict them to integration checks. Saving preserves the assignment, requeues the job for admission under its selected quota pool, clears previous manual Launch approval, and archives prepared prompt/skill evidence. Running workers and recovery replacements cannot be edited. The launch revision covers model, quota pool and subagent policy/cap together; a subagent-only edit invalidates stale reservations and regenerates the prepared prompt. The editor shows the catalog timestamp and supports a durable watcher-backed refresh request; normal watcher checks refresh catalogs older than one hour. The watcher refreshes the live capability catalog and passes the exact selection to native `t3_thread_launch`, with the device project and explicit root workspace. Writing “use high” in the task text would not configure the model. The returned provider, model, options and project are checked; a mismatch requires investigation, not another blind launch.
 
-### 7. Replacement worker prompt
+### 4. Replacement worker prompt
 
 Automatic replacement uses the same current standard task, including approved prompt edits, with this preamble:
 
@@ -258,35 +250,42 @@ Do not invent devices or add firmware beyond the approved files.
 - In automatic mode, admit at most one new job per quota sample and honor concurrency and forecast guards.
 ```
 
-The prepared prompt, skill snapshot and provenance live under `data/jobs/<job-id>/`. Historical snapshots remain unchanged when the canonical task template is edited. New preparation uses the current template. Automatic replacements save their own prompt artifacts under the job's `recoveries/<recovery-id>/` directory.
+The prepared prompt, skill snapshot and provenance live under `data/jobs/<job-id>/`. Historical snapshots remain unchanged when the canonical task template is edited. New preparation uses the current template. Re-preparing unlaunched work archives earlier prompt/skill/provenance files under `instruction-history/`; content-addressed assigned skills remain intact. A launch reservation rejects stale or modified instructions and requires preparation again. Once a launch is reserved, reconcile it without rewriting its saved prompt. Replacements use the same safeguards and save their own prompt artifacts under `recoveries/<recovery-id>/`.
 
 ### 6. Independent completion audit
 
-```text
-Worker claims, stage checklists, huge test counts, elapsed runtime
-and a green build alone do not establish completion.
+The watcher follows [REVIEW.md](REVIEW.md), under policy
+`algorithm-library-v2`. It checks outcomes, not completion of a stage sequence:
 
-Runtime under two hours is an extra audit trigger,
-not automatic failure or a minimum-runtime requirement.
+- `assignment`: actual brief, saved skill, approved scope changes, original
+  integrity and version choice.
+- `algorithms`: recovered processing and relevant controls, state and
+  coordination; documented coverage and gaps.
+- `library`: clear, reusable and modifiable code, portable interfaces,
+  caller-controlled configuration/memory, independent instances and examples.
+- `device`: complete device functionality in compiled C, build/run evidence
+  without original machine-code emulation, and suitable host adapters. The
+  surrounding implementation need not meet the library's readability standard.
+- `fidelity`: independent assembled-processing evidence, justified perceptual
+  tolerances, transient/drift/randomness checks and honest limitations.
+- `browser`: device-like panel and important controls, actual library processing,
+  original/library A/B, initialization/audio-path checks and reachable access.
+- `reuse`: useful indexed cards, actual components, independent builds and
+  meaningful tests.
 
-Inspect the actual assignment, version choice, source/readability,
-feature specification and tests, original/exact proof and limits,
-readable faithful implementation, portable main, integrations,
-and browser initialization and actual audio processing.
+The agent inspects the actual artifacts and performs bounded independent checks.
+A green build, test counts, a listening port or a model's final claim do not
+establish completion. Short runs warrant closer coverage inspection, not a
+minimum-runtime requirement.
 
-Run meaningful independent checks.
-A listening port or HTTP 200 alone does not verify the browser.
-```
-
-The detailed audit in [REVIEW.md](REVIEW.md) requires the watcher to:
-
-1. Recover the actual assignment and later scope changes.
-2. Check each deliverable against artifacts.
-3. Inspect readability and reuse directly.
-4. Verify proof quality and behavioral coverage, not just totals.
-5. Exercise the browser handoff.
-6. Give short runs extra scrutiny without demanding wasted time.
-7. Decide and act on evidence.
+A surrounding compiled C device shell may use recovered code and existing
+components without the algorithm library's cleanup standard. A shell that still
+executes original machine code in an emulator does not fulfill the compiled-device
+deliverable. Original/reference A/B may use emulation. Do not demand separate
+exact/faithful branches, all quirk switches, three-version comparisons or physical
+hardware/scheduler reconstruction. Historical obligations and applicability follow
+the saved assignment and explicit user scope changes; do not silently migrate
+running workers. Evidence does not have to use one prescribed recovery technique.
 
 The verdicts are:
 
@@ -296,7 +295,16 @@ incomplete        — concrete requirements remain; send actionable findings
 review_pending    — the audit has not established enough evidence yet
 ```
 
-The recorder requires evidence for assignment, original, specification, exact, faithful, main and browser. Verified completion also requires a successful captured check at the reviewed current commit, intact check logs, and no tracked changes from that commit. These guards support the review; they do not automatically establish semantic quality. An unfinished audit alone is not grounds to tell the worker to redo its work.
+The review JSON uses `areas` with exactly the seven keys above, each containing a
+specific evidence string; the recorder stamps `reviewPolicy`. Verified completion
+also requires a successful captured check at the reviewed current commit, intact
+check logs and no tracked changes from that commit. These guards support review;
+they do not prove semantic quality. An unfinished audit alone does not authorize
+a corrective nudge.
+
+Old review records and prompt snapshots remain historical evidence. This update
+does not automatically reopen finished jobs, change a running worker's assignment,
+send scope updates or unpause the watcher.
 
 ### 7. Recovery and durable records
 
@@ -321,7 +329,7 @@ A matching incident is persisted before repair or launch actions. Bounded repair
 3. **Let workers run.** Workers do the RE. The watcher reads progress directly and intervenes when an agent stopped with authorized work remaining. Routine checks stay short; full source review waits for relevant evidence.
 4. **Adjust concurrency using measurements.** The controller estimates percentage-point depletion per hour, time to exhaustion, and demand by active worker profile. Forecasts inform whether to add another worker. It requires calibration before expanding concurrency, respects hard limits and concurrency caps, and treats missing data as a hold. Different model/settings/subagent mixes need new measurements.
 5. **Handle limits and resets.** The watcher retries limited workers in the same conversations after recovery evidence. The default `short-window` policy prioritizes Claude's five-hour window where available, while still blocking hard weekly exhaustion. `weekly-first` and `balanced` are alternatives. Other account activity affects the estimates, so exact depletion at reset is not guaranteed.
-6. **Review completion.** A final “done” starts an independent audit. Concrete findings go back to the worker; pending review stays pending; only supported completion is recorded as verified.
+6. **Review completion.** A final “done” lets the watcher launch a fresh temporary reviewer using [COMPLETION_REVIEWER.md](COMPLETION_REVIEWER.md), the actual saved assignment, source fingerprint and previous findings/responses. The reviewer writes evidence and a verdict; the watcher sends required corrections to the existing worker. Optional polish does not block acceptance. Two automatic correction rounds are allowed, then unresolved findings go to the user. Pending review stays pending; only independently supported completion is recorded as verified. Tasks and retries are durable; see CONTROLLER.md for the exact helper workflow.
 7. **Continue using the same watcher.** Submit more firmware through the launcher. To change the watcher, point ownership at another existing thread. To replace a broken worker, use the dashboard’s explicit Replace thread action, manual adoption of an existing continuation, or a configured automatic recovery rule. Neither requires discarding the logical job or project files.
 
 Local `ccusage` reports supplement subscription percentages with token totals and available cache fields. They are cumulative snapshots and are not summed across polls. Per-worker attribution is used only where the provider-session mapping is established. Token counts are distinct from subscription-limit percentages.
@@ -341,8 +349,8 @@ Saving recovery rules in the dashboard posts a dedicated update immediately, eve
 ## Where each part comes from
 
 - Standard worker task: `/home/vesper/RE/bens_skills/firmware-rewrite/START_PROMPT.md`.
-- Full firmware workflow: `/home/vesper/RE/bens_skills/firmware-rewrite/SKILL.md`, read by the worker.
-- Shared infrastructure: `https://github.com/benekreng/fw_re`, cloned into each device's `resources/`.
+- Skill source: `/home/vesper/RE/bens_skills/firmware-rewrite/SKILL.md`, copied into the assigned snapshot the worker reads.
+- Shared infrastructure: `https://github.com/benekreng/fw_re`, used under the device's `resources/` where needed.
 - Worker composition, preparation and review recording: [controller.py](../controller.py).
 - Watcher startup/wakes, ownership, usage and admission: [engine.py](../engine.py).
 - Watcher instructions: [CONTROLLER.md](../CONTROLLER.md).
@@ -353,3 +361,5 @@ Saving recovery rules in the dashboard posts a dedicated update immediately, eve
 Launch approval is persisted separately from queue submission. Normal monitoring/resumes of existing workers continue according to the watcher pause settings; recovery replacements are authorized by their enabled policy in both manual and automatic queue modes, without another Launch click. See the [README launch-mode section](../README.md#choose-manual-or-automatic-launches) for controls and the CLI equivalent.
 
 The guide reuses and explains these components. It does not replace their live instructions, embed the full skill, or recreate the old Night Watch timer.
+
+Completion-review orchestration is implemented by `completion_review.py`; the watcher owns native T3 delegation and messages. The worker never launches its reviewer. Current-job re-audit requests preserve original prompts and historical reviews. Reviewers currently use Opus 5.5 xhigh, fast mode off, no further delegation. They check whether important algorithms can be safely modified without repeating the RE, including consequential constants/maps and timing assumptions; essential constants need explanation, not elimination. `review_performance.py` aggregates evidence-based worker assessments and observed correction timing into each job's `WORKER_PERFORMANCE.json`. Unknown history is not zero time or failure, and changing reviewer models does not reset correction budgets.

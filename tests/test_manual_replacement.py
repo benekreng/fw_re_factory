@@ -69,9 +69,10 @@ class ManualReplacementCase(unittest.TestCase):
     def test_generated_continuation_is_complete_and_contains_no_retired_history(self):
         ticket = self.ready();prompt = Path(ticket['promptPath']).read_text()
         from controller import render_worker_prompt
-        regular,base,_ = render_worker_prompt(self.s.job(self.j['id']))
+        provenance=json.loads((Path(ticket['promptPath']).parent/'provenance.json').read_text())
+        regular,base,skill = render_worker_prompt(self.s.job(self.j['id']),skill_path=provenance['assignedSkillPath'])
         self.assertIn('Another agent has already worked on this project',prompt)
-        self.assertIn(base.read_text(),prompt)
+        self.assertIn(base.read_text().replace(str(skill),provenance['assignedSkillPath']),prompt)
         self.assertNotIn(self.old,prompt);self.assertNotIn('operator-replace',prompt)
         self.assertNotIn('Old finding',prompt);self.assertNotIn('Old context',prompt)
         details='\n\nRun details (these settings override the defaults above):\n'

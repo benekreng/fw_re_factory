@@ -15,7 +15,7 @@ import uuid
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app import Store,Problem,now,sha
-from controller import claim,prepare,record_thread,record_review,atomic_json,run_check
+from controller import AREAS,claim,prepare,record_thread,record_review,atomic_json,run_check
 import engine
 import dashboard
 
@@ -94,7 +94,7 @@ class Case(unittest.TestCase):
         self.assertEqual(result['state'],'running')
     def test_review_claim_without_checks_is_rejected(self):
         j=self.enqueue();self.s.patch(j['id'],thread_id=str(uuid.uuid4()))
-        r={'verdict':'verified_complete','summary':'claimed done','commit':'a'*40,'areas':{k:'claimed' for k in ['assignment','original','specification','exact','faithful','main','browser']},'findings':[]}
+        r={'verdict':'verified_complete','summary':'claimed done','commit':'a'*40,'areas':{k:'claimed' for k in AREAS},'findings':[]}
         with self.assertRaises(Problem):record_review(self.s,j['id'],r)
     def test_handover_fences_previous_owner(self):
         first,second=str(uuid.uuid4()),str(uuid.uuid4())
@@ -192,7 +192,7 @@ class Case(unittest.TestCase):
             c.execute('INSERT INTO checks(id,job,time,command,exit_code,log_path,log_sha256,commit_sha) VALUES (?,?,?,?,?,?,?,?)',
                 ('check',j['id'],now(),'["check"]',0,str(log),sha(log),head))
         review={'verdict':'verified_complete','summary':'Fixture source and browser audit evidence','commit':head,
-                'areas':{k:'specific evidence path' for k in ['assignment','original','specification','exact','faithful','main','browser']},'findings':[]}
+                'areas':{k:'specific evidence path' for k in AREAS},'findings':[]}
         return j,review,log,dest
     def test_complete_review_requires_current_clean_commit_and_log(self):
         j,r,log,dest=self.review_fixture()
